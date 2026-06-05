@@ -1,13 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "nevoflux-docs",
-  "compatibility_date": "2026-06-05",
-  // Static-only deployment: serve the Next.js static export in ./out as
-  // Cloudflare Workers static assets. No server/OpenNext involved.
-  // Run `bun run build` first to generate ./out, then `wrangler deploy`.
-  "assets": {
-    "directory": "./out",
-    // We ship per-page HTML (an MPA, not a SPA); serve out/404.html for misses.
-    "not_found_handling": "404-page"
-  }
+  // Cloudflare Pages config. The site is a Next.js static export; `bun run build`
+  // emits ./out, which Pages serves directly (no server / no OpenNext).
+  // Required field for Pages projects:
+  "pages_build_output_dir": "./out"
 }

@@ -52,7 +52,25 @@ bun run lint       # eslint
 | `src/lib/layout.shared.tsx`         | Shared nav/links + UI translations           |
 | `src/app/global.css`                | Theme tokens + font (the NevoFlux re-skin)   |
 
-## Deployment
+## Deployment (Cloudflare Pages)
 
-`bun run build` produces a fully static site in `out/`, deployable to any static
-host (e.g. Cloudflare Pages) at `docs.nevoflux.app`.
+`bun run build` produces a fully static site in `out/`. It deploys to
+**Cloudflare Pages** at `docs.nevoflux.app` — there is no server/OpenNext step.
+
+**Git integration (recommended).** In the Pages project settings:
+
+| Setting                 | Value           |
+| ----------------------- | --------------- |
+| Build command           | `bun run build` |
+| Build output directory  | `out`           |
+| Framework preset        | None            |
+
+`wrangler.jsonc` declares `pages_build_output_dir: "./out"` so the output dir is
+also picked up automatically.
+
+**CLI deploy (optional).** `bun run deploy` runs the build then
+`wrangler pages deploy`. `bun run preview:cf` serves the built output locally via
+`wrangler pages dev`.
+
+> Note: this is a **static** site, so do **not** use the Next.js / OpenNext
+> (`opennextjs-cloudflare`) preset — it expects a server build and will fail.
