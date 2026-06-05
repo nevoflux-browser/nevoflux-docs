@@ -52,25 +52,26 @@ bun run lint       # eslint
 | `src/lib/layout.shared.tsx`         | Shared nav/links + UI translations           |
 | `src/app/global.css`                | Theme tokens + font (the NevoFlux re-skin)   |
 
-## Deployment (Cloudflare Pages)
+## Deployment (Cloudflare Workers — static assets)
 
-`bun run build` produces a fully static site in `out/`. It deploys to
-**Cloudflare Pages** at `docs.nevoflux.app` — there is no server/OpenNext step.
+`bun run build` produces a fully static site in `out/`, deployed as **Cloudflare
+Workers static assets** (`wrangler.jsonc` → `assets.directory: "./out"`). There is
+no server/OpenNext step, and it only needs a Workers-scoped API token.
 
-**Git integration (recommended).** In the Pages project settings:
+**Workers Builds (Git integration).** In the project's build configuration:
 
-| Setting                 | Value           |
-| ----------------------- | --------------- |
-| Build command           | `bun run build` |
-| Build output directory  | `out`           |
-| Framework preset        | None            |
+| Setting        | Value             |
+| -------------- | ----------------- |
+| Build command  | `bun run build`   |
+| Deploy command | `npx wrangler deploy` |
 
-`wrangler.jsonc` declares `pages_build_output_dir: "./out"` so the output dir is
-also picked up automatically.
+**CLI deploy (optional).** `bun run deploy` runs the build then `wrangler deploy`.
+`bun run preview:cf` serves the built output locally via `wrangler dev`.
 
-**CLI deploy (optional).** `bun run deploy` runs the build then
-`wrangler pages deploy`. `bun run preview:cf` serves the built output locally via
-`wrangler pages dev`.
-
-> Note: this is a **static** site, so do **not** use the Next.js / OpenNext
-> (`opennextjs-cloudflare`) preset — it expects a server build and will fail.
+> Notes:
+>
+> - This is a **static** site — do **not** use the Next.js / OpenNext
+>   (`opennextjs-cloudflare`) preset; it expects a server build and will fail.
+> - Cloudflare **Pages** also works, but a Pages deploy needs a token with
+>   `Cloudflare Pages: Edit`. Deploying via `wrangler pages deploy` with a
+>   Workers-only token fails with auth error 10000.

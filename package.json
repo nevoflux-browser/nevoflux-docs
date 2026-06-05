@@ -6,8 +6,8 @@
     "build": "next build && node scripts/static-root-redirect.mjs",
     "dev": "next dev --port 3001",
     "start": "serve out",
-    "deploy": "bun run build && wrangler pages deploy",
-    "preview:cf": "bun run build && wrangler pages dev ./out",
+    "deploy": "bun run build && wrangler deploy",
+    "preview:cf": "bun run build && wrangler dev",
     "typecheck": "fumadocs-mdx && next typegen && tsc --noEmit",
     "postinstall": "fumadocs-mdx",
     "lint": "eslint"
