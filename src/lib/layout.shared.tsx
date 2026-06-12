@@ -39,11 +39,6 @@ export function baseOptions(locale: string): BaseLayoutProps {
         url: `/${locale}/docs`,
         active: 'nested-url',
       },
-      {
-        text: locale === 'zh' ? '更新日志' : 'Changelog',
-        url: `/${locale}/docs/changelog`,
-        active: 'url',
-      },
     ],
   };
 }
