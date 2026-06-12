@@ -1,0 +1,369 @@
+---
+title: Develop a Pack
+description: Author a NevoFlux pack — the pack.toml manifest, components, the capability sandbox, lifecycle, and a complete example.
+---
+
+> Protocol: `pack-protocol/0.1` · Audience: pack authors (first- and third-party)
+
+A pack is **a set of files plus a manifest** — you do not write installer code. You
+write declarations and the files they point at; the daemon handles transactional
+install/uninstall, rollback, an install receipt, and a hard guarantee that
+**uninstall never deletes the user's data by default**.
+
+## Mental model
+
+```
+your-pack/
+├── pack.toml                 ← the only declaration source
+└── components/               ← the files the manifest points at
+   ├── skills/                → copied (flattened) into  ~/.config/nevoflux/skills/
+   ├── canvas-tools/*.toml    → copied into             ~/.config/nevoflux/canvas-tools/
+   ├── seed/*.md              → seeded into the GBrain knowledge base (only if absent)
+   └── canvas-app/dist/       → inserted as a persistent "My Canvas" dashboard artifact
+```
+
+The platform guarantees **path safety** (files only land in whitelisted dirs),
+**idempotency** (re-installing a version is a no-op), **transactional install**
+(any failure rolls everything back), and a **clean, receipt-driven uninstall** that
+keeps the user's knowledge-base data unless they explicitly purge it.
+
+## Quick start
+
+A minimal one-skill pack:
+
+```
+hello-pack/
+├── pack.toml
+└── components/
+   └── skills/
+      └── hello/
+         └── SKILL.md
+```
+
+`pack.toml`:
+
+```toml
+[pack]
+name = "hello-pack"
+version = "0.1.0"
+protocol = "pack-protocol/0.1"
+min_nevoflux = "0.3.0"
+
+[components.skills]
+dir = "components/skills"
+```
+
+Install it (the daemon must be running):
+
+```bash
+nevoflux pack validate  hello-pack/pack.toml   # dry capability check, no writes
+nevoflux pack install   hello-pack/pack.toml
+nevoflux pack list                             # → hello-pack 0.1.0
+nevoflux pack uninstall hello-pack             # clean removal
+```
+
+…or from the browser: **Settings → Packs → Install Pack…**.
+
+## The manifest — `pack.toml`
+
+`pack.toml` is the **single source of truth**. All component paths are relative to the
+directory that contains it.
+
+### `[pack]` (required)
+
+```toml
+[pack]
+name = "my-pack"                  # required. [a-z0-9-]+, unique. Also the receipt key and
+                                  #   the default GBrain namespace prefix.
+version = "0.1.0"                 # required. semver.
+protocol = "pack-protocol/0.1"    # required. Must be a protocol version the platform supports.
+min_nevoflux = "0.3.0"            # required. semver lower bound; checked against the daemon version.
+description = "One-line summary"  # optional.
+license = "MIT"                   # optional.
+authors = ["You <you@example>"]   # optional.
+namespace = "my"                  # optional. Overrides the GBrain namespace prefix (default = name).
+```
+
+### Components overview
+
+| Component | Lands in | Removed on uninstall? |
+|---|---|---|
+| `[components.skills]` | `~/.config/nevoflux/skills/` | yes (sha-guarded) |
+| `[components.canvas_tools]` | `~/.config/nevoflux/canvas-tools/` | yes |
+| `[[components.seed]]` | GBrain page (only if absent) | **no — kept unless `--purge-data`** |
+| `[components.dashboard]` | "My Canvas" (persistent artifact) | yes |
+| `[components.protected]` | (declaration only) | n/a — marks pages as user data |
+| `[components.knowledge]` | — | **not supported yet** |
+
+Every component is optional. A pack can ship any subset.
+
+## Components in depth
+
+### Skills — `[components.skills]`
+
+```toml
+[components.skills]
+dir = "components/skills"
+```
+
+`dir` points at a directory in your pack. Its contents are **flattened one level** into
+the user's skills directory; the loader scans exactly one level and recognizes two
+shapes:
+
+```
+components/skills/
+├── my-evaluate/SKILL.md       → installs as  skills/my-evaluate/SKILL.md
+├── my-scan/SKILL.md           → installs as  skills/my-scan/SKILL.md
+└── my-quick.md                → installs as  skills/my-quick.md
+```
+
+A skill file is Markdown with YAML frontmatter. Two rules matter:
+
+1. **`allowed-tools` must use the daemon's *real* tool names** (e.g. `browser_navigate`,
+   `brain_put_page`, `web_search`). A name that doesn't match a registered tool is
+   **silently ignored** — a typo costs you a tool with no error.
+2. **The `dependencies` field is cosmetic** — it's parsed but the loader does nothing
+   with it. To share rules between skills, use conventions (below), not `dependencies`.
+
+#### Conventions (shared rules) via `skill_read`
+
+To share invariants across several skills, ship them as files under a **host skill** and
+read them at runtime:
+
+```
+components/skills/
+└── my/                         ← a "host" skill named `my`
+   ├── SKILL.md
+   └── conventions/
+      ├── rules.md
+      └── scoring.md
+```
+
+In a skill's body, read a convention with `skill_read('my', 'conventions/rules.md')`.
+`skill_read(name, path)` reads files under the named skill's directory (`..` traversal
+is blocked). Have each skill `skill_read` its shared rules as its first step.
+
+### Canvas tools — `[components.canvas_tools]`
+
+```toml
+[components.canvas_tools]
+files = ["components/canvas-tools/pdf-render.toml"]
+external_binaries = ["weasyprint"]   # optional: probed by `pack status`; never executed by the pack
+```
+
+Each file is a [whitelist TOML tool definition](/docs/canvas/tool-whitelist), copied to
+`~/.config/nevoflux/canvas-tools/<basename>` and picked up by the canvas-tools loader
+(re-scanned on demand — no restart needed). `external_binaries` are declared so
+`pack status` can tell the user "weasyprint not found — install it"; the pack engine
+never runs them.
+
+### Seed pages — `[[components.seed]]`
+
+Use seed for **starter/template pages the user will edit**. Each seed is written to the
+knowledge base **only if the page doesn't already exist** — re-install never clobbers
+user edits.
+
+```toml
+[[components.seed]]
+slug = "my/cv"
+from = "components/seed/cv.template.md"
+
+[[components.seed]]
+slug = "my/profile"
+from = "components/seed/profile.template.md"
+```
+
+- `slug` must live **inside your namespace** — equal the namespace or start with
+  `<namespace>/`.
+- **Every seed slug MUST be covered by `[components.protected]`** or the pack is rejected
+  at validation. This is the "scaffolding is user data" guarantee.
+- Seed pages are **kept on uninstall by default**; only `--purge-data` removes them.
+
+### Protected — `[components.protected]`
+
+Declares which knowledge-base pages/prefixes are **user data** that uninstall must never
+delete by default (declaration only — no files placed):
+
+```toml
+[components.protected]
+slugs    = ["my/cv", "my/profile"]
+prefixes = ["my/reports/", "my/companies/"]
+```
+
+Everything listed must be inside your namespace. A page matches if its slug equals a
+`slugs` entry or starts with a `prefixes` entry. Rule of thumb: **anything your skills
+write that represents the user's own data** should be under a protected prefix, and
+**every seed slug must be covered here**.
+
+### Namespacing
+
+Your pack may only touch knowledge-base pages under its **namespace prefix** — the
+`[pack] namespace` if set, else `[pack] name`. Every seed slug and every protected
+slug/prefix must equal the namespace or sit under `<namespace>/`. This keeps two packs
+(and the user's own pages) from colliding.
+
+### Dashboard — `[components.dashboard]`
+
+Ships a **prebuilt Canvas micro-app** as a persistent "My Canvas" artifact:
+
+```toml
+[components.dashboard]
+artifact_id = "my-pack-dashboard"   # must start with the pack name
+content_type = "project"
+files_from = "components/canvas-app/dist"   # a directory of built files (index.html + assets)
+entry = "index.html"                        # the entry file within files_from
+```
+
+The directory's files are packed into the artifact and inserted as persistent, so it
+survives session deletion and appears under **My Canvas**. Re-install upserts the same
+`artifact_id` (no duplicate rows), which **must start with the pack name** so packs
+can't clobber each other's artifacts.
+
+### Not yet supported
+
+- **`[components.knowledge]`** — shipping a whole prebuilt knowledge base as a removable,
+  read-only source is **not available in `pack-protocol/0.1`**. A manifest containing it
+  is rejected with `KNOWLEDGE_UNSUPPORTED`. Ship starter content as `[[components.seed]]`
+  pages instead.
+- **`[components.config]`** — packs may **not** write to `config.toml`. A manifest
+  containing it is rejected. Express behavior through skills/conventions instead.
+
+## The capability sandbox (validation rules)
+
+Before placing a single file, the platform validates your manifest and reports **all**
+violations at once. Run `nevoflux pack validate <manifest>` to see them without
+installing. Your pack must satisfy:
+
+1. **Whitelisted destinations only** — files land solely in `skills/`, `canvas-tools/`,
+   or `packs/<name>/`.
+2. **No path traversal** — every source path must be *relative* and stay inside the pack;
+   absolute paths, `..` escapes, and backslash separators are rejected on every OS.
+3. **No `[components.config]`** — config writes are forbidden.
+4. **Namespace isolation** — seed slugs and protected slugs/prefixes must be inside the
+   pack namespace.
+5. **`seed` ⊆ `protected`** — every seed slug must be covered by a protected slug/prefix
+   (hard reject otherwise — the "never auto-delete user data" guarantee).
+6. **Dashboard id namespacing** — `dashboard.artifact_id` must start with the pack name.
+
+Parse-time checks also apply: `name` matches `[a-z0-9-]+`; `version`/`min_nevoflux` are
+valid semver; `protocol` is supported.
+
+## Lifecycle & guarantees
+
+**Install** runs in phases, appending to a receipt and rolling back on any failure:
+`resolve → compat → capability → idempotency → place files → seed pages → dashboard
+artifact → activate → commit receipt`.
+
+- **Idempotent**: re-installing the same version is a no-op (use `--force` to reinstall);
+  seed is only-if-absent; the dashboard upserts by id.
+- **Receipt**: written to `~/.config/nevoflux/packs/<name>/receipt.json` — records every
+  placed file (absolute path + sha256), the dashboard artifact id, and the seeded slugs.
+
+**Uninstall** is driven entirely by the receipt:
+
+- Deletes the files the pack placed — but **skips any file the user has since edited**
+  (sha256 mismatch) unless you pass `--force`.
+- Removes the dashboard artifact and prunes the pack's own dirs.
+- **Keeps seeded/user pages by default.** `--purge-data` deletes the seeded pages
+  (protected pages still refuse to be auto-removed).
+
+**Update** refreshes the pack's own files/artifacts and adds any *new* seed pages
+(only-if-absent), but never touches existing user data.
+
+## Testing your pack
+
+1. **Validate** (no writes): `nevoflux pack validate my-pack/pack.toml` — expect
+   `{ "ok": true, "violations": [] }`. Any violation string (e.g. `SeedNotProtected`,
+   `PathTraversal`, `SlugOutsideNamespace`, `ArtifactIdNotNamespaced`,
+   `ConfigComponentForbidden`) tells you exactly what to fix.
+2. **Round-trip in a sandbox** so you don't touch your real config:
+
+   ```bash
+   export XDG_CONFIG_HOME=/tmp/pk-cfg NEVOFLUX_DATA_DIR=/tmp/pk-data
+   mkdir -p /tmp/pk-cfg/nevoflux && : > /tmp/pk-cfg/nevoflux/config.toml
+   nevoflux --daemon &                 # start a sandboxed daemon
+   nevoflux pack install   my-pack/pack.toml
+   nevoflux pack list
+   ls /tmp/pk-cfg/nevoflux/skills/      # verify placement
+   cat /tmp/pk-cfg/nevoflux/packs/my-pack/receipt.json
+   nevoflux pack uninstall my-pack      # verify it leaves no trace
+   nevoflux --stop
+   ```
+
+3. **Skill lint** — confirm every skill's `allowed-tools` entry matches a real tool name
+   (a mismatch is silently dropped).
+
+## A complete example
+
+```
+career-pack/
+├── pack.toml
+└── components/
+   ├── skills/
+   │  ├── career/                      # host skill: conventions live here
+   │  │  ├── SKILL.md
+   │  │  └── conventions/{rules,scoring,writing}.md
+   │  ├── career-evaluate/SKILL.md
+   │  └── career-scan/SKILL.md
+   ├── canvas-tools/pdf-render.toml
+   ├── seed/{cv,profile}.template.md
+   └── canvas-app/dist/index.html
+```
+
+```toml
+[pack]
+name = "career-pack"
+version = "0.1.0"
+protocol = "pack-protocol/0.1"
+min_nevoflux = "0.3.0"
+description = "A job-hunt command center."
+license = "MIT"
+namespace = "career"                 # pages live under career/…
+
+[components.skills]
+dir = "components/skills"
+
+[components.canvas_tools]
+files = ["components/canvas-tools/pdf-render.toml"]
+external_binaries = ["weasyprint"]
+
+[[components.seed]]
+slug = "career/cv"
+from = "components/seed/cv.template.md"
+[[components.seed]]
+slug = "career/profile"
+from = "components/seed/profile.template.md"
+
+[components.dashboard]
+artifact_id = "career-pack-dashboard"
+content_type = "project"
+files_from = "components/canvas-app/dist"
+entry = "index.html"
+
+[components.protected]
+slugs    = ["career/cv", "career/profile"]
+prefixes = ["career/reports/", "career/companies/"]
+```
+
+`career/cv` and `career/profile` are seeded (only if absent) **and** protected; the
+skills read their shared rules via `skill_read('career', 'conventions/…')`; the dashboard
+lands in My Canvas. Uninstall removes the skills, tool, and dashboard but **keeps the
+user's `career/…` pages** unless `--purge-data` is passed.
+
+## Gotchas / FAQ
+
+- **"My skill installed but a tool doesn't work."** An `allowed-tools` entry doesn't
+  match a real tool name — it's silently ignored. Check the exact tool name.
+- **"Install was rejected: `SeedNotProtected`."** Add every seed slug to
+  `[components.protected]` (a slug or a covering prefix). This is mandatory.
+- **"`KNOWLEDGE_UNSUPPORTED`."** Remove `[components.knowledge]` — it's deferred. Use
+  `[[components.seed]]` for starter content.
+- **"`PathTraversal` / `OutsideWhitelistDir`."** A source path is absolute, uses `..`, or
+  uses backslashes. Keep all component paths relative and inside the pack.
+- **"`ArtifactIdNotNamespaced`."** Prefix `dashboard.artifact_id` with your pack name.
+- **"CLI can't reach the daemon."** Start it (`nevoflux --daemon`), or ensure the
+  browser/native host launched a daemon with `pack.*` support.
+- **"Uninstall left my edited file."** By design — uninstall skips files whose sha256 no
+  longer matches the receipt. Use `--force` to remove anyway.
+- **"The dashboard didn't update after `update`."** It upserts by `artifact_id`; keep the
+  id stable across versions.

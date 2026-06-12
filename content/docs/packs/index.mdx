@@ -1,0 +1,67 @@
+---
+title: Packs
+description: Bundle skills, canvas tools, seed pages, and a dashboard into one installable unit — with a clean, data-safe uninstall.
+---
+
+A **pack** is a bundle of NevoFlux extensions — [skills](/docs/skills),
+[canvas tools](/docs/canvas/tool-whitelist), starter [knowledge-base](/docs/knowledge-base)
+pages, and a [Canvas](/docs/canvas) dashboard — installed from a single `pack.toml`
+manifest. One install drops everything into place; one uninstall takes it cleanly back
+out.
+
+Packs target the `pack-protocol/0.1` protocol.
+
+## What a pack can bundle
+
+| Component | What it adds | Lands in |
+|---|---|---|
+| **Skills** | reusable agent capabilities | `~/.config/nevoflux/skills/` |
+| **Canvas tools** | whitelisted command / internal tools | `~/.config/nevoflux/canvas-tools/` |
+| **Seed pages** | starter knowledge-base pages you can edit | GBrain (only if absent) |
+| **Dashboard** | a persistent Canvas micro-app | My Canvas |
+
+Every component is optional — a pack can ship any subset.
+
+## What the platform guarantees
+
+A pack author writes declarations and files; the daemon owns *how* to install and
+uninstall. That gives you:
+
+- **Transactional install** — if any step fails, everything already done is rolled back.
+- **Idempotent** — re-installing the same version is a no-op; seed pages are written
+  only if absent; the dashboard upserts by a fixed id.
+- **Path-safe** — files only ever land in the whitelisted extension directories; a
+  manifest can't escape them.
+- **Clean, receipt-driven uninstall** — the platform records exactly what it placed and
+  reverses precisely that. It **never deletes your knowledge-base data unless you
+  explicitly ask to purge it**, and it skips files you've edited since install.
+
+## Installing & managing packs
+
+Two ways: the **Settings → Packs** panel, or the CLI.
+
+### Settings → Packs
+
+[Settings → Packs](/docs/settings/packs) lists your installed packs and installs new
+ones from either a local `pack.toml` path or a **GitHub source**. Remote sources run an
+**inspect → preview → confirm** flow before anything is written. Per-row **Update** and
+**Uninstall** are available, with an optional "also delete this pack's data" choice that
+is **off by default**.
+
+### CLI
+
+The CLI needs a running daemon:
+
+```bash
+nevoflux pack validate  <path/to/pack.toml>   # dry capability check, no writes
+nevoflux pack install   <path/to/pack.toml> [--force]
+nevoflux pack list                            # installed packs
+nevoflux pack status    <name>                # version, component counts, deps
+nevoflux pack update    <path/to/pack.toml>
+nevoflux pack uninstall <name> [--purge-data] [--force]
+```
+
+<Cards>
+  <Card title="Develop a pack" href="/docs/packs/development" />
+  <Card title="Settings → Packs" href="/docs/settings/packs" />
+</Cards>

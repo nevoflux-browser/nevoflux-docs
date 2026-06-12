@@ -1,0 +1,347 @@
+---
+title: 开发扩展包
+description: 编写 NevoFlux 扩展包 —— pack.toml 清单、各类组件、能力沙箱、生命周期与完整示例。
+---
+
+> 协议:`pack-protocol/0.1` · 读者:扩展包作者(第一方与第三方)
+
+扩展包就是**一组文件加一份清单** —— 你无需编写任何安装器代码。你只写声明和它们指向的
+文件,守护进程负责事务性安装/卸载、回滚、安装凭据,以及一条硬保证:**默认情况下卸载绝不
+删除用户的数据**。
+
+## 心智模型
+
+```
+your-pack/
+├── pack.toml                 ← 唯一的声明来源
+└── components/               ← 清单所指向的文件
+   ├── skills/                → (扁平化)复制到  ~/.config/nevoflux/skills/
+   ├── canvas-tools/*.toml    → 复制到           ~/.config/nevoflux/canvas-tools/
+   ├── seed/*.md              → 写入 GBrain 知识库(仅当不存在时)
+   └── canvas-app/dist/       → 作为常驻的“我的 Canvas”仪表盘工件插入
+```
+
+平台为你保证:**路径安全**(文件只落在白名单目录)、**幂等**(重复安装同一版本是空操作)、
+**事务性安装**(任一失败全部回滚),以及**凭据驱动的干净卸载** —— 除非用户明确清除,否则
+保留其知识库数据。
+
+## 快速上手
+
+一个最小的单技能扩展包:
+
+```
+hello-pack/
+├── pack.toml
+└── components/
+   └── skills/
+      └── hello/
+         └── SKILL.md
+```
+
+`pack.toml`:
+
+```toml
+[pack]
+name = "hello-pack"
+version = "0.1.0"
+protocol = "pack-protocol/0.1"
+min_nevoflux = "0.3.0"
+
+[components.skills]
+dir = "components/skills"
+```
+
+安装它(守护进程必须在运行):
+
+```bash
+nevoflux pack validate  hello-pack/pack.toml   # 干跑能力检查,不写入
+nevoflux pack install   hello-pack/pack.toml
+nevoflux pack list                             # → hello-pack 0.1.0
+nevoflux pack uninstall hello-pack             # 干净移除
+```
+
+……或从浏览器:**设置 → Packs → Install Pack…**。
+
+## 清单 —— `pack.toml`
+
+`pack.toml` 是**唯一可信来源**。所有组件路径都相对于包含它的目录。
+
+### `[pack]`(必填)
+
+```toml
+[pack]
+name = "my-pack"                  # 必填。[a-z0-9-]+,唯一。也是凭据键和默认的 GBrain 命名空间前缀。
+version = "0.1.0"                 # 必填。semver。
+protocol = "pack-protocol/0.1"    # 必填。必须是平台支持的协议版本。
+min_nevoflux = "0.3.0"            # 必填。semver 下界;与守护进程版本核对。
+description = "One-line summary"  # 可选。
+license = "MIT"                   # 可选。
+authors = ["You <you@example>"]   # 可选。
+namespace = "my"                  # 可选。覆盖 GBrain 命名空间前缀(默认 = name)。
+```
+
+### 组件总览
+
+| 组件 | 落地位置 | 卸载时是否移除? |
+|---|---|---|
+| `[components.skills]` | `~/.config/nevoflux/skills/` | 是(按 sha 守护) |
+| `[components.canvas_tools]` | `~/.config/nevoflux/canvas-tools/` | 是 |
+| `[[components.seed]]` | GBrain 页面(仅当不存在) | **否 —— 除非 `--purge-data` 否则保留** |
+| `[components.dashboard]` | “我的 Canvas”(常驻工件) | 是 |
+| `[components.protected]` | (仅声明) | 不适用 —— 将页面标记为用户数据 |
+| `[components.knowledge]` | — | **暂不支持** |
+
+每个组件都是可选的,扩展包可以只带任意子集。
+
+## 各组件详解
+
+### 技能 —— `[components.skills]`
+
+```toml
+[components.skills]
+dir = "components/skills"
+```
+
+`dir` 指向你包中的一个目录,其内容会被**扁平化一层**复制到用户的技能目录;加载器只扫描一层,
+并识别两种形态:
+
+```
+components/skills/
+├── my-evaluate/SKILL.md       → 安装为  skills/my-evaluate/SKILL.md
+├── my-scan/SKILL.md           → 安装为  skills/my-scan/SKILL.md
+└── my-quick.md                → 安装为  skills/my-quick.md
+```
+
+技能文件是带 YAML frontmatter 的 Markdown。有两条规则很重要:
+
+1. **`allowed-tools` 必须使用守护进程的*真实*工具名**(如 `browser_navigate`、
+   `brain_put_page`、`web_search`)。与已注册工具不匹配的名称会被**静默忽略** —— 一个拼写
+   错误会让你白白失去一个工具,且没有任何报错。
+2. **`dependencies` 字段只是摆设** —— 它会被解析,但加载器不会用它做任何事。要在技能间共享
+   规则,请使用下文的**约定(conventions)**,而非 `dependencies`。
+
+#### 通过 `skill_read` 共享约定(规则)
+
+要在多个技能间共享不变量,把它们作为文件放在一个**宿主技能**下,运行时再读取:
+
+```
+components/skills/
+└── my/                         ← 名为 my 的“宿主”技能
+   ├── SKILL.md
+   └── conventions/
+      ├── rules.md
+      └── scoring.md
+```
+
+在技能正文中用 `skill_read('my', 'conventions/rules.md')` 读取一条约定。
+`skill_read(name, path)` 读取指定技能目录下的文件(`..` 越级被阻止)。约定俗成:让每个技能
+在第一步就 `skill_read` 它共享的规则。
+
+### Canvas 工具 —— `[components.canvas_tools]`
+
+```toml
+[components.canvas_tools]
+files = ["components/canvas-tools/pdf-render.toml"]
+external_binaries = ["weasyprint"]   # 可选:由 `pack status` 探测;扩展包从不执行它
+```
+
+每个文件都是一份[白名单 TOML 工具定义](/docs/canvas/tool-whitelist),复制到
+`~/.config/nevoflux/canvas-tools/<basename>`,并由 canvas 工具加载器按需重新扫描(无需重启)。
+声明 `external_binaries` 是为了让 `pack status` 能提示用户“未找到 weasyprint —— 请安装它”;
+扩展包引擎从不运行它们。
+
+### 种子页面 —— `[[components.seed]]`
+
+种子用于**供用户编辑的起步/模板页面**。每个种子**仅当页面尚不存在时**才写入知识库 ——
+重装绝不覆盖用户的编辑。
+
+```toml
+[[components.seed]]
+slug = "my/cv"
+from = "components/seed/cv.template.md"
+
+[[components.seed]]
+slug = "my/profile"
+from = "components/seed/profile.template.md"
+```
+
+- `slug` 必须落在**你的命名空间内** —— 等于该命名空间,或以 `<namespace>/` 开头。
+- **每个种子 slug 都必须被 `[components.protected]` 覆盖**,否则扩展包在校验时被拒绝。这正是
+  “脚手架即用户数据”的保证。
+- 种子页面**默认在卸载时保留**;只有 `--purge-data` 才会删除。
+
+### 受保护项 —— `[components.protected]`
+
+声明哪些知识库页面/前缀是卸载时默认绝不删除的**用户数据**(仅声明,不放置文件):
+
+```toml
+[components.protected]
+slugs    = ["my/cv", "my/profile"]
+prefixes = ["my/reports/", "my/companies/"]
+```
+
+所列内容都必须落在你的命名空间内。某页面若其 slug 等于某个 `slugs` 项、或以某个 `prefixes`
+项开头,即视为匹配。经验法则:**你的技能写入的、代表用户自有数据的任何内容**都应放在受保护
+前缀下,并且**每个种子 slug 都必须在此覆盖**。
+
+### 命名空间
+
+你的扩展包只能触碰其**命名空间前缀**下的知识库页面 —— 即设置了 `[pack] namespace` 就用它,
+否则用 `[pack] name`。每个种子 slug 以及每个受保护 slug/前缀都必须等于该命名空间或落在
+`<namespace>/` 之下。这能避免两个扩展包(以及用户自己的页面)相互冲突。
+
+### 仪表盘 —— `[components.dashboard]`
+
+将一个**预先构建好的 Canvas 微应用**作为常驻的“我的 Canvas”工件发布:
+
+```toml
+[components.dashboard]
+artifact_id = "my-pack-dashboard"   # 必须以扩展包名开头
+content_type = "project"
+files_from = "components/canvas-app/dist"   # 构建产物目录(index.html + 资源)
+entry = "index.html"                        # files_from 中的入口文件
+```
+
+该目录的文件会被打入工件并以常驻方式插入,因此它能在会话删除后存留,并出现在**我的 Canvas**
+下。重装会按相同 `artifact_id` 更新(不产生重复行),而该 id **必须以扩展包名开头**,这样不同
+扩展包就无法互相覆盖工件。
+
+### 暂不支持
+
+- **`[components.knowledge]`** —— 把整套预构建知识库作为可移除、只读的源发布,在
+  `pack-protocol/0.1` 中**尚不可用**。包含它的清单会以 `KNOWLEDGE_UNSUPPORTED` 被拒绝。请改用
+  `[[components.seed]]` 页面发布起步内容。
+- **`[components.config]`** —— 扩展包**不可**写入 `config.toml`。包含它的清单会被拒绝。请改为
+  通过技能/约定来表达行为。
+
+## 能力沙箱(校验规则)
+
+在放置任何文件之前,平台会校验你的清单,并一次性报告**所有**违规项。运行
+`nevoflux pack validate <manifest>` 即可在不安装的情况下查看。你的扩展包必须满足:
+
+1. **仅限白名单目标** —— 文件只落在 `skills/`、`canvas-tools/` 或 `packs/<name>/`。
+2. **禁止路径穿越** —— 每个源路径必须是*相对*路径并留在包内;绝对路径、`..` 越界、反斜杠分隔
+   在所有操作系统上都被拒绝。
+3. **禁止 `[components.config]`** —— 不允许写入配置。
+4. **命名空间隔离** —— 种子 slug 与受保护 slug/前缀必须落在包命名空间内。
+5. **`seed` ⊆ `protected`** —— 每个种子 slug 都必须被某个受保护 slug/前缀覆盖(否则硬性拒绝
+   —— 这是“绝不自动删除用户数据”的保证)。
+6. **仪表盘 id 命名空间** —— `dashboard.artifact_id` 必须以扩展包名开头。
+
+解析期检查也同样适用:`name` 匹配 `[a-z0-9-]+`;`version`/`min_nevoflux` 为合法 semver;
+`protocol` 被支持。
+
+## 生命周期与保证
+
+**安装**分阶段进行,逐步写入凭据,任一失败即回滚:
+`解析 → 兼容性 → 能力 → 幂等 → 放置文件 → 种子页面 → 仪表盘工件 → 激活 → 提交凭据`。
+
+- **幂等**:重复安装同一版本是空操作(用 `--force` 重装);种子仅当不存在时写入;仪表盘按 id
+  更新。
+- **凭据**:写入 `~/.config/nevoflux/packs/<name>/receipt.json` —— 记录每个放置的文件(绝对路径
+  + sha256)、仪表盘工件 id,以及已写入的种子 slug。
+
+**卸载**完全由凭据驱动:
+
+- 删除扩展包放置过的文件 —— 但**跳过用户此后已编辑的任何文件**(sha256 不匹配),除非你传
+  `--force`。
+- 移除仪表盘工件并清理扩展包自有目录。
+- **默认保留种子/用户页面。** `--purge-data` 删除种子页面(受保护页面仍拒绝被自动移除)。
+
+**更新**会刷新扩展包自有的文件/工件,并补上任何*新增*的种子页面(仅当不存在),但绝不触碰
+已有的用户数据。
+
+## 测试你的扩展包
+
+1. **校验**(不写入):`nevoflux pack validate my-pack/pack.toml` —— 期望
+   `{ "ok": true, "violations": [] }`。任何违规字符串(如 `SeedNotProtected`、
+   `PathTraversal`、`SlugOutsideNamespace`、`ArtifactIdNotNamespaced`、
+   `ConfigComponentForbidden`)都会精确告诉你该修什么。
+2. **在沙箱中走一遍完整流程**,以免动到你真正的配置:
+
+   ```bash
+   export XDG_CONFIG_HOME=/tmp/pk-cfg NEVOFLUX_DATA_DIR=/tmp/pk-data
+   mkdir -p /tmp/pk-cfg/nevoflux && : > /tmp/pk-cfg/nevoflux/config.toml
+   nevoflux --daemon &                 # 启动沙箱化守护进程
+   nevoflux pack install   my-pack/pack.toml
+   nevoflux pack list
+   ls /tmp/pk-cfg/nevoflux/skills/      # 检查放置
+   cat /tmp/pk-cfg/nevoflux/packs/my-pack/receipt.json
+   nevoflux pack uninstall my-pack      # 确认不留痕迹
+   nevoflux --stop
+   ```
+
+3. **技能 lint** —— 确认每个技能的 `allowed-tools` 项都匹配一个真实工具名(不匹配会被静默丢弃)。
+
+## 一个完整示例
+
+```
+career-pack/
+├── pack.toml
+└── components/
+   ├── skills/
+   │  ├── career/                      # 宿主技能:约定放在这里
+   │  │  ├── SKILL.md
+   │  │  └── conventions/{rules,scoring,writing}.md
+   │  ├── career-evaluate/SKILL.md
+   │  └── career-scan/SKILL.md
+   ├── canvas-tools/pdf-render.toml
+   ├── seed/{cv,profile}.template.md
+   └── canvas-app/dist/index.html
+```
+
+```toml
+[pack]
+name = "career-pack"
+version = "0.1.0"
+protocol = "pack-protocol/0.1"
+min_nevoflux = "0.3.0"
+description = "A job-hunt command center."
+license = "MIT"
+namespace = "career"                 # 页面落在 career/… 下
+
+[components.skills]
+dir = "components/skills"
+
+[components.canvas_tools]
+files = ["components/canvas-tools/pdf-render.toml"]
+external_binaries = ["weasyprint"]
+
+[[components.seed]]
+slug = "career/cv"
+from = "components/seed/cv.template.md"
+[[components.seed]]
+slug = "career/profile"
+from = "components/seed/profile.template.md"
+
+[components.dashboard]
+artifact_id = "career-pack-dashboard"
+content_type = "project"
+files_from = "components/canvas-app/dist"
+entry = "index.html"
+
+[components.protected]
+slugs    = ["career/cv", "career/profile"]
+prefixes = ["career/reports/", "career/companies/"]
+```
+
+`career/cv` 与 `career/profile` 既被种子化(仅当不存在)**又**受保护;各技能通过
+`skill_read('career', 'conventions/…')` 读取共享规则;仪表盘落在“我的 Canvas”。卸载会移除
+技能、工具与仪表盘,但**保留用户的 `career/…` 页面**,除非传入 `--purge-data`。
+
+## 常见坑 / FAQ
+
+- **“技能装上了,但某个工具不工作。”** 某个 `allowed-tools` 项没匹配到真实工具名 —— 被静默
+  忽略了。请核对确切的工具名。
+- **“安装被拒绝:`SeedNotProtected`。”** 把每个种子 slug 加入 `[components.protected]`(一个
+  slug 或一条覆盖前缀)。这是强制要求。
+- **“`KNOWLEDGE_UNSUPPORTED`。”** 移除 `[components.knowledge]` —— 它被推迟。起步内容请用
+  `[[components.seed]]`。
+- **“`PathTraversal` / `OutsideWhitelistDir`。”** 某个源路径是绝对路径、用了 `..` 或反斜杠。
+  让所有组件路径保持相对且在包内。
+- **“`ArtifactIdNotNamespaced`。”** 给 `dashboard.artifact_id` 加上你的扩展包名前缀。
+- **“命令行连不上守护进程。”** 启动它(`nevoflux --daemon`),或确保浏览器/本地宿主已启动一个
+  带 `pack.*` 支持的守护进程。
+- **“卸载留下了我编辑过的文件。”** 这是设计如此 —— 卸载会跳过 sha256 已不匹配凭据的文件。要
+  强制删除请用 `--force`。
+- **“`update` 后仪表盘没更新。”** 它按 `artifact_id` 更新;请保持该 id 跨版本稳定。

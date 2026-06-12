@@ -1,0 +1,33 @@
+---
+title: Packs
+description: Install, update, and remove packs — bundles of skills, tools, seed pages, and dashboards.
+---
+
+The **Packs** tab installs and manages [packs](/docs/packs) — bundles of skills,
+canvas tools, starter knowledge-base pages, and a Canvas dashboard, each described by a
+single `pack.toml` manifest.
+
+## The list
+
+Each installed pack shows its name, version, and component counts, with per-row
+**Update** and **Uninstall** actions. Uninstall offers an optional **"also delete this
+pack's data"** choice — **off by default**, so your knowledge-base pages survive a
+removal unless you opt in.
+
+## Install a pack
+
+Click **Install Pack…** and provide a source:
+
+- **A local path** to a `pack.toml` (with an optional pre-flight **validate**).
+- **A GitHub source** — `github:user/repo[/sub][@ref]` or a `https://github.com/…` URL.
+
+Remote sources run an **inspect → preview → confirm** flow first: NevoFlux previews what
+the pack contains, flags any bundled tool binaries, surfaces policy violations (which
+block the install), warns about unreviewed sources, and requires an explicit second
+confirmation before anything is written. Progress and errors stream inline.
+
+Installs land where you'd expect — skills in `~/.config/nevoflux/skills/`, canvas tools
+in `~/.config/nevoflux/canvas-tools/`.
+
+For the manifest format, components, the capability sandbox, and lifecycle, see
+**[Packs → Develop a pack](/docs/packs/development)**.

@@ -1,4 +1,4 @@
 {
   "title": "设置",
-  "pages": ["index", "general", "ai-models", "mcp-servers", "canvas-tools", "my-canvas", "knowledge-base", "shortcuts"]
+  "pages": ["index", "general", "ai-models", "mcp-servers", "canvas-tools", "my-canvas", "knowledge-base", "packs", "shortcuts"]
 }

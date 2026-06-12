@@ -1,0 +1,60 @@
+---
+title: 扩展包
+description: 把技能、Canvas 工具、种子页面与仪表盘打包成一个可安装单元 —— 卸载干净、绝不误删数据。
+---
+
+**扩展包(Pack)**是 NevoFlux 扩展能力的打包形式 —— 包含[技能](/docs/skills)、
+[Canvas 工具](/docs/canvas/tool-whitelist)、用作起步的[知识库](/docs/knowledge-base)
+页面,以及一个 [Canvas](/docs/canvas) 仪表盘 —— 通过单个 `pack.toml` 清单安装。一次
+安装把所有东西就位,一次卸载又干净地全部移除。
+
+扩展包面向 `pack-protocol/0.1` 协议。
+
+## 一个扩展包能打包什么
+
+| 组件 | 它带来什么 | 落地位置 |
+|---|---|---|
+| **技能** | 可复用的智能体能力 | `~/.config/nevoflux/skills/` |
+| **Canvas 工具** | 白名单中的命令 / 内部工具 | `~/.config/nevoflux/canvas-tools/` |
+| **种子页面** | 可供你编辑的知识库起步页 | GBrain(仅当不存在时写入) |
+| **仪表盘** | 一个常驻的 Canvas 微应用 | 我的 Canvas |
+
+每个组件都是可选的 —— 扩展包可以只带其中任意子集。
+
+## 平台为你保证什么
+
+扩展包作者只写声明和文件;守护进程负责*如何*安装与卸载。因此你得到:
+
+- **事务性安装** —— 任一步骤失败,已完成的操作全部回滚。
+- **幂等** —— 重复安装同一版本是空操作;种子页面仅当不存在时写入;仪表盘按固定 id 更新。
+- **路径安全** —— 文件只会落在白名单扩展目录中,清单无法越界。
+- **凭据驱动的干净卸载** —— 平台精确记录它放置了什么,并恰好逆向移除。**除非你明确要求
+  清除数据,否则绝不删除你的知识库数据**,并会跳过你安装后已编辑过的文件。
+
+## 安装与管理扩展包
+
+两种方式:**设置 → Packs** 面板,或命令行。
+
+### 设置 → Packs
+
+[设置 → Packs](/docs/settings/packs) 列出已安装的扩展包,并支持从本地 `pack.toml` 路径
+或 **GitHub 源**安装。远程源在写入任何文件前会先经过**检视 → 预览 → 确认**流程。每行都有
+**更新**与**卸载**操作,并提供一个**默认关闭**的“同时删除该扩展包的数据”选项。
+
+### 命令行
+
+命令行需要守护进程在运行:
+
+```bash
+nevoflux pack validate  <path/to/pack.toml>   # 干跑能力检查,不写入
+nevoflux pack install   <path/to/pack.toml> [--force]
+nevoflux pack list                            # 已安装的扩展包
+nevoflux pack status    <name>                # 版本、组件数量、依赖
+nevoflux pack update    <path/to/pack.toml>
+nevoflux pack uninstall <name> [--purge-data] [--force]
+```
+
+<Cards>
+  <Card title="开发扩展包" href="/docs/packs/development" />
+  <Card title="设置 → Packs" href="/docs/settings/packs" />
+</Cards>
