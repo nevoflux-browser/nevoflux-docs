@@ -38,7 +38,7 @@ uninstall. That gives you:
 
 ## Installing & managing packs
 
-Two ways: the **Settings → Packs** panel, or the CLI.
+Three ways: the **Settings → Packs** panel, an **install link**, or the CLI.
 
 ### Settings → Packs
 
@@ -47,6 +47,36 @@ ones from either a local `pack.toml` path or a **GitHub source**. Remote sources
 **inspect → preview → confirm** flow before anything is written. Per-row **Update** and
 **Uninstall** are available, with an optional "also delete this pack's data" choice that
 is **off by default**.
+
+### Install link (packhub)
+
+Packs can be offered for install from a single link anywhere — a website, a README, or
+the packhub catalog — via a deep link:
+
+```
+nevoflux://pack-install?src=<github-source>
+```
+
+`<github-source>` is **GitHub-only**: the shorthand `github:owner/repo[/sub][@ref]`, or a
+`https://github.com/owner/repo[/tree/ref/sub]` URL. Clicking the link opens a dedicated
+install page that runs the same **inspect → preview → confirm** flow as Settings → Packs —
+it previews the contents, flags bundled tool binaries, blocks on policy violations, and
+requires an explicit **Install** click before anything is written (already-installed packs
+show **Update** / **Reinstall** instead). A link can only *offer* an install — it never
+performs one silently.
+
+```
+nevoflux://pack-install?src=github:owner/repo
+nevoflux://pack-install?src=github:owner/repo@v1.0.0
+nevoflux://pack-install?src=https://github.com/owner/repo
+```
+
+Pin a `@ref` (tag or commit) for reproducible installs. To put an install button on a web
+page:
+
+```html
+<a href="nevoflux://pack-install?src=github:owner/repo@v1.0.0">Install in NevoFlux</a>
+```
 
 ### CLI
 
