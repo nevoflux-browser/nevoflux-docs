@@ -33,13 +33,39 @@ description: 把技能、Canvas 工具、种子页面与仪表盘打包成一个
 
 ## 安装与管理扩展包
 
-两种方式:**设置 → Packs** 面板,或命令行。
+三种方式:**设置 → Packs** 面板、**安装链接**,或命令行。
 
 ### 设置 → Packs
 
 [设置 → Packs](/zh/docs/settings/packs) 列出已安装的扩展包,并支持从本地 `pack.toml` 路径
 或 **GitHub 源**安装。远程源在写入任何文件前会先经过**检视 → 预览 → 确认**流程。每行都有
 **更新**与**卸载**操作,并提供一个**默认关闭**的“同时删除该扩展包的数据”选项。
+
+### 安装链接(packhub)
+
+扩展包可以通过一个深链接从任何地方一键发起安装 —— 网站、README,或 packhub 目录:
+
+```
+nevoflux://pack-install?src=<github-源>
+```
+
+`<github-源>` **仅支持 GitHub**:简写 `github:owner/repo[/sub][@ref]`,或一个
+`https://github.com/owner/repo[/tree/ref/sub]` 链接。点击该链接会打开一个专用安装页,运行
+与 设置 → Packs 相同的**检视 → 预览 → 确认**流程 —— 预览内容、标记其中携带的工具二进制、
+对会阻止安装的策略违规项给出拦截,并要求你明确点击 **Install** 后才会写入(已安装的扩展包
+会改为显示**更新** / **重装**)。链接只能*发起*安装 —— 绝不会静默执行。
+
+```
+nevoflux://pack-install?src=github:owner/repo
+nevoflux://pack-install?src=github:owner/repo@v1.0.0
+nevoflux://pack-install?src=https://github.com/owner/repo
+```
+
+钉一个 `@ref`(标签或提交)可获得可复现的安装。在网页上放一个安装按钮:
+
+```html
+<a href="nevoflux://pack-install?src=github:owner/repo@v1.0.0">在 NevoFlux 中安装</a>
+```
 
 ### 命令行
 
