@@ -1,0 +1,175 @@
+---
+title: Docker image
+description: Build the nevoflux/agent image, its build args, run modes, image environment, and the live-view (VNC/noVNC).
+---
+
+The `nevoflux/agent` image is built from the agent repo's `deploy/headless/`
+directory. It **downloads the official prebuilt releases from GitHub** — there is
+**no local compilation**.
+
+## Build
+
+```bash
+docker build -t nevoflux/agent:latest deploy/headless      # amd64 or arm64
+```
+
+### Build args
+
+| Arg | Default | Meaning |
+| --- | --- | --- |
+| `AGENT_VERSION` | `latest` | Agent release tag — **with** a leading `v` (e.g. `v0.3.10`). |
+| `BROWSER_VERSION` | `latest` | Browser release tag — **no** leading `v` (e.g. `0.3.10`). |
+| `TARGETARCH` | host arch | `amd64` → `x86_64` assets, `arm64` → `aarch64`. Set by `docker buildx --platform`. |
+| `PACK_REPOS` | empty | Space-separated packs to bundle (see [Bundling packs](#bundling-packs)). |
+| `INSTALL_GBRAIN` | `1` | Install + enable the GBrain knowledge base (`0` to skip entirely). |
+| `GBRAIN_PIN` | `github:garrytan/gbrain#<pin>` | Pin the GBrain version. |
+| `LLM_PROVIDER` | `anthropic` | Provider written into the baked `[llm]` config (see below). |
+
+> **Pin for reproducible builds.** `latest` may pair a newer agent with a newer
+> browser and is **not reproducible**. Pin both:
+>
+> ```bash
+> docker build -t nevoflux/agent:v0.3.10 \
+>   --build-arg AGENT_VERSION=v0.3.10 --build-arg BROWSER_VERSION=0.3.10 \
+>   deploy/headless
+> ```
+
+The agent tarball is **checksum-verified** against `checksums-sha256.txt` at build
+time.
+
+### Multi-arch
+
+`TARGETARCH` selects the `x86_64` / `aarch64` download. On an arm64 host — or with
+`docker buildx build --platform linux/arm64` — it fetches the arm build
+automatically.
+
+### Building from local (unreleased) binaries — `Dockerfile.local`
+
+To test locally-built or unreleased daemon/browser changes (a feature not yet in a
+release), stage the four artifacts into `deploy/headless/` and build the
+`COPY`-based variant:
+
+```bash
+# stage into deploy/headless/: dist/nevoflux/ (browser package tree),
+# nevoflux-agent (built daemon), libonnxruntime.so (v1.24.x), models/fastembed/
+docker build -f deploy/headless/Dockerfile.local -t nevoflux/agent:local deploy/headless
+```
+
+In Compose, set `build.dockerfile: Dockerfile.local`.
+
+## What the image bundles
+
+### GBrain (knowledge base) — on by default
+
+With `INSTALL_GBRAIN=1` (the default) the build:
+
+- installs `bun` and `bun add <GBRAIN_PIN>` into `~/.nevoflux/brain-tool`, and creates the brain dir `~/.gbrain`;
+- writes `~/.config/nevoflux/config.toml` with `[knowledge_base.brain] enabled = true` and `[llm] provider = <LLM_PROVIDER>`.
+
+GBrain's LLM calls route through the in-process gateway to that provider, so **no
+separate GBrain key is needed** — just the provider's `*_API_KEY` (e.g.
+`ANTHROPIC_API_KEY`) at runtime.
+
+```bash
+# default: gbrain on, provider anthropic (needs ANTHROPIC_API_KEY at run time)
+docker build -t nevoflux/agent:latest deploy/headless
+
+# another provider, a pin, or disabled:
+docker build \
+  --build-arg LLM_PROVIDER=openai \      # then set OPENAI_API_KEY at run time
+  --build-arg GBRAIN_PIN=github:garrytan/gbrain#<sha> \
+  --build-arg INSTALL_GBRAIN=0 \         # skip gbrain entirely
+  -t nevoflux/agent:latest deploy/headless
+```
+
+> If you **mount your own** `config.toml`, keep `[knowledge_base.brain] enabled = true`
+> and a working `[llm]` provider, or GBrain won't start. Without a working provider,
+> browser tasks and brain storage still work, but GBrain's LLM synthesis
+> (`brain_think`) won't.
+
+### Bundling packs
+
+Pack install goes over the daemon's RPC (there is no offline installer), so packs
+are **cloned into the image at build time** and **installed at startup** once the
+daemon is up. This works even with an ephemeral (tmpfs) data dir — packs are
+re-applied on each start from the baked-in clones.
+
+```bash
+docker build -t nevoflux/agent:latest \
+  --build-arg PACK_REPOS="owner/pack-repo https://github.com/x/y.git" \
+  deploy/headless
+# cloned to /opt/packs/<name>; the entrypoint runs `pack install` after the daemon is listening.
+```
+
+`PACK_REPOS` is space-separated — a GitHub `owner/repo` shorthand or a full git
+URL. No packs are installed if it is empty. See [Packs](/en/docs/packs) for the pack
+format.
+
+## Run — service mode (hardened)
+
+```bash
+docker run --rm -p 8080:8080 \
+  --read-only --tmpfs /tmp --tmpfs /var/nevoflux/data \
+  --tmpfs /home/nevo/.gbrain --tmpfs /home/nevo/.cache \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 512 --memory 4g --cpus 2 \
+  -v "$PWD/out:/work" \
+  -v nevoflux-base-profiles:/base-profiles:ro \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  nevoflux/agent:latest
+```
+
+- `/work` is where each task's `result.json` + `debug-bundle/` + artifacts are drained.
+- `base-profiles` (read-only) holds pre-authenticated login templates, cloned per task.
+- The container runs read-only; the daemon writes only to the tmpfs mounts above.
+
+The default command is `--daemon --headless --http-addr 0.0.0.0:8080`, which also
+serves the OpenAI-compatible `/v1/chat/completions` on the same port. To split
+OpenAI / MCP / ACP onto their own ports, override the command — see
+[Task API & interfaces](/en/docs/deployment/task-api#alternative-interfaces).
+
+## Live view (VNC / noVNC)
+
+Set `NEVOFLUX_VNC=1` (and provide a password file) to watch a run live. The image
+then runs `x11vnc` (raw VNC on `:5900`) **and** `websockify` serving noVNC on
+`:6080`:
+
+```bash
+docker run --rm -p 8080:8080 -p 6080:6080 -p 5900:5900 \
+  -e NEVOFLUX_VNC=1 -e NEVOFLUX_VNC_PASSWD=/etc/nevoflux/vncpasswd \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  nevoflux/agent:latest
+# watch in any browser:  http://localhost:6080/vnc.html
+# or a native VNC client: localhost:5900
+```
+
+| Env | Effect |
+| --- | --- |
+| `NEVOFLUX_VNC` | `1` enables raw VNC (`:5900`) + noVNC (`:6080`). Default off. |
+| `NEVOFLUX_VNC_PASSWD` | Path to the VNC password file (default `/etc/nevoflux/vncpasswd`). |
+| `NEVOFLUX_VNC_VIEWONLY` | `1` = watch only, no input — so you can't disturb the automation. |
+
+> **Keep VNC off in production.** A raw VNC / noVNC port is a remote-control
+> surface. Only expose it behind an authenticated HTTPS proxy or an SSH tunnel.
+
+## Image environment
+
+These are baked into the image (you rarely change them):
+
+| Env | Value | Purpose |
+| --- | --- | --- |
+| `NEVOFLUX_DATA_DIR` | `/var/nevoflux/data` | Daemon lock / port / db (mount as tmpfs). |
+| `NEVOFLUX_BROWSER_BIN` | `/opt/nevoflux/nevoflux` | The bundled browser binary. |
+| `NEVOFLUX_BASE_PROFILES` | `/base-profiles` | Where base login profiles are read from. |
+| `DISPLAY` | `:99` | The Xvfb virtual display. |
+| `HOME` | `/home/nevo` | Non-root home (GBrain + caches live here). |
+| `HF_HUB_OFFLINE` | `1` | Embeddings run offline (model is bundled). |
+| `MOZ_DISABLE_CONTENT_SANDBOX` | `1` | Required for the browser inside the container. |
+
+## Startup sequence
+
+The entrypoint (under `tini`) runs: **dbus** → **Xvfb** → *(optional VNC)* →
+**GBrain init** → **daemon**. In daemon mode it starts the daemon in the
+background, installs any bundled packs once the daemon is listening, then hands
+over (forwarding `SIGTERM`/`SIGINT` for a clean shutdown). Non-daemon invocations
+(e.g. `config`, `pack`) run directly.

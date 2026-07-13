@@ -1,0 +1,162 @@
+---
+title: Docker Compose
+description: 随发行版附带的无头 NevoFlux Agent docker-compose.yml——服务、环境变量、卷、tmpfs 与容器加固，逐项讲解。
+---
+
+`deploy/headless/docker-compose.yml` 把 `docker run` 调用打包成可复用、预加固的服务，
+省去你反复输入各种参数。它定义了两个服务。
+
+| 服务 | 模式 | 适用于 |
+| --- | --- | --- |
+| **`headless`** | 长驻服务（`--daemon --headless --http-addr 0.0.0.0:8080`） | **可信任务。** 在 `:8080` 上提供任务 API。由 `docker compose up` 启动。 |
+| **`oneshot`** | 一任务一容器 | **不可信任务。** 被 `oneshot` Compose profile 门控，因此 `up` 不会启动它。 |
+
+两者应用相同的容器加固（`read_only`、`cap_drop: ALL`、`no-new-privileges`、pids /
+cpu / 内存限制、tmpfs 数据目录）以及相同的卷（`./out:/work`、
+`base-profiles:/base-profiles:ro`）。
+
+## 使用方法
+
+```bash
+# 0. 一次性：把 API 密钥（以及可选的出口代理）放入环境
+export ANTHROPIC_API_KEY=sk-...
+export EGRESS_PROXY=http://egress:3128
+
+# 1. 构建镜像
+docker compose build
+
+# 2. 服务模式（可信）：提供任务 API
+docker compose up
+#   curl -X POST localhost:8080/tasks -d '{"task":"open example.com, report title","mode":"browser"}'
+#   curl localhost:8080/metrics
+```
+
+## `headless` 服务逐项讲解
+
+```yaml
+services:
+  headless:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # 镜像从 GitHub 发行版下载（无需本地编译）。固定版本：
+      #   args: { AGENT_VERSION: v0.3.10, BROWSER_VERSION: 0.3.10 }   # 默认：latest
+      # 若要改从本地暂存产物构建，设置：dockerfile: Dockerfile.local
+    image: nevoflux/agent:latest
+    command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080"]
+    ports:
+      - "8080:8080"       # 任务 API（+ OpenAI /v1）：POST /tasks、GET /tasks/:id[/events]、/metrics
+      # - "8081:8081"     # 专用 OpenAI （需要 --openai-addr）
+      # - "8082:8082"     # 专用 MCP    （需要 --mcp-addr）
+      # - "8083:8083"     # 专用 ACP    （需要 --acp-addr）
+      # - "6080:6080"     # 浏览器中的 noVNC：http://localhost:6080/vnc.html（NEVOFLUX_VNC=1）
+      # - "5900:5900"     # 原生客户端的原始 VNC（NEVOFLUX_VNC=1）。生产中两者都关闭。
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY (or your provider's key)}"
+      # HTTP_PROXY: "${EGRESS_PROXY}"        # 让出口经过代理（同时设置下面的 NO_PROXY）
+      # HTTPS_PROXY: "${EGRESS_PROXY}"
+      # NO_PROXY: "127.0.0.1,localhost"      # 让进程内网关不走代理
+      NEVOFLUX_VNC: "0"                       # 设 1（+ 密码文件）以在 :5900 / :6080 实时观看
+      RUST_LOG: "info"                        # 日志级别（stderr → docker compose logs）
+      # NEVOFLUX_HEADLESS_SCRIPT: /opt/nevoflux/fixed-flow.py   # 固定脚本模式（无 LLM）
+      # NEVOFLUX_SESSION_MODE: "1"            # 在一段可信任务流中复用同一个浏览器
+    volumes:
+      - ./out:/work                           # 落盘 result.json + debug-bundle + 产物
+      - base-profiles:/base-profiles:ro       # 预先登录的模板配置（按任务克隆）
+      # - ./fixed-flow.py:/opt/nevoflux/fixed-flow.py:ro
+    tmpfs:
+      - /tmp
+      - /var/nevoflux/data                    # daemon.port / 数据库——临时
+      - /home/nevo/.gbrain                     # GBrain 数据库（HOME 位于只读根文件系统上）
+      - /home/nevo/.cache                      # bun / 杂项缓存
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+      # - "seccomp=./seccomp.json"            # 调好后加上一份 profile
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4g
+          pids: 512
+    restart: "no"
+    # networks: [egress-restricted]           # 接入受限出口的网络
+
+volumes:
+  base-profiles:
+    # external: true                          # 复用已有的命名卷
+```
+
+### 配置说明
+
+- **`command`** —— `--headless` 提供任务 API 并为每个任务派生一个浏览器。任务 API 端口
+  也提供 OpenAI 兼容的 `/v1/chat/completions`。要把 OpenAI / MCP / ACP 拆到各自端口，
+  加上相应标志并发布端口：
+  ```yaml
+  command: ["--daemon","--headless","--http-addr","0.0.0.0:8080",
+            "--openai-addr","0.0.0.0:8081","--mcp-addr","0.0.0.0:8082","--acp-addr","0.0.0.0:8083"]
+  ```
+- **服务商密钥** —— 守护进程读取该服务商专用变量（`ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY` / …）。它必须与镜像内置的 `[llm].provider` 一致；换其他服务商时，
+  既要在此设置其密钥，**也要**用 `--build-arg LLM_PROVIDER=…` 重新构建。
+- **出口代理** —— 不要把 `HTTP_PROXY` / `HTTPS_PROXY` 设为空字符串（空代理会让客户端
+  挂起）。直连出口就留空，或设置为真实代理并**同时**设置 `NO_PROXY: "127.0.0.1,localhost"`。
+- **`pids`** —— 设在 `deploy.resources.limits` 下；Compose v2 不允许同时设置
+  `pids_limit` 和 `deploy.resources.limits.pids`。
+- **网络** —— Compose 自身无法表达出口白名单。请把 `headless` 放到一个出口受限的网络上
+  （外部防火墙、代理 sidecar，或 k8s `NetworkPolicy`）。
+
+## `oneshot` 服务
+
+```yaml
+  oneshot:
+    profiles: ["oneshot"]                     # 不会被 `docker compose up` 启动
+    image: nevoflux/agent:latest
+    build: { context: ., dockerfile: Dockerfile }
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - ./out:/work
+      - base-profiles:/base-profiles:ro
+    tmpfs: [/tmp, /var/nevoflux/data, /home/nevo/.gbrain, /home/nevo/.cache]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    deploy: { resources: { limits: { cpus: "2.0", memory: 4g, pids: 512 } } }
+```
+
+它设计为按任务调用，把 `run --task …` 参数传给 entrypoint：
+
+```bash
+docker compose --profile oneshot run --rm oneshot \
+  run --task "open example.com and report the title" \
+      --profile base1 --policy browser-only --wall-clock 300s --token-budget 200k
+```
+
+> **v0.3.10 注意事项。** `oneshot` 服务与 `run --task` 一次性形式随部署资产附带，但
+> `run` 子命令**尚未接入 v0.3.10 的 agent 二进制**——目前它会被忽略，只有
+> `--daemon --headless` 服务模式生效。在其落地之前，请通过**为每个任务运行一个全新的
+> `headless` 容器**（启动、提交一个任务、销毁）来获得按任务隔离，或对可信的顺序流程使用
+> 带 `end_session` 的[会话模式](/zh/docs/deployment/task-api#会话模式)。
+
+## 针对你的环境要改什么
+
+| 位置 | 改动 |
+| --- | --- |
+| `environment.ANTHROPIC_API_KEY` | 你的服务商密钥。更佳做法：留空并通过 `HTTP_PROXY` 注入，使被提示注入的 agent 无法从环境变量读取。 |
+| `HTTP_PROXY` / `HTTPS_PROXY`（`EGRESS_PROXY`） | 指向一个**白名单**只放行 LLM API 与你任务域名的出口代理——这是硬网络边界。 |
+| `volumes: base-profiles` | 一次性用预先登录的配置填充该命名卷（由人工登录），或设 `external: true` 复用已有卷；按任务克隆。 |
+| `volumes: ./out:/work` | 每个任务 `result.json` + `debug-bundle/` 落盘的宿主目录。 |
+| `ports` / VNC | 仅在需要实时观看时取消 `6080` / `5900` 注释**并**设置 `NEVOFLUX_VNC=1`（+ 密码文件）；生产中关闭。 |
+| `deploy.resources.limits` | 按宿主调 cpu / 内存 / pids。 |
+| `security_opt: seccomp` | 备好后加上一份调好的 seccomp profile。 |
+| `networks` | 把 `headless` 接入出口受限的网络。 |
+
+## Base 配置（登录状态）
+
+**base 配置**是由人工**登录一次**的预先认证浏览器配置。每个任务都会**克隆**它（绝不触
+碰原件），因此任务启动时就已登录。用预先登录的配置一次性填充 `base-profiles` 命名卷，
+然后按名称引用某个配置——通过 `POST /tasks` 的 `profile` 字段，或为精简接口用
+`NEVOFLUX_TASK_PROFILE`。请保持挂载为**只读**，以免任务覆盖某个 base 凭据；仅当你使用
+[会话模式](/zh/docs/deployment/task-api#会话模式)的 `save_profile` 把克隆写回时才去掉 `:ro`。

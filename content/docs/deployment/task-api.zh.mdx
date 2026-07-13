@@ -1,0 +1,255 @@
+---
+title: 任务 API 与接口
+description: 无头 HTTP 任务 API、OpenAI / MCP / ACP 前端、会话与固定脚本模式，以及完整的命令行标志与环境变量参考。
+---
+
+在服务模式下，守护进程在 `--http-addr` 上提供一个小巧的 HTTP **任务 API**。所有端点均为
+JSON。
+
+## 端点
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/tasks` | 提交任务 → `{"id":"task-N"}` |
+| `GET` | `/tasks/:id` | 状态 / 结果快照 |
+| `GET` | `/tasks/:id/events` | **SSE** —— 直到终态的 `status` 帧 |
+| `DELETE` | `/tasks/:id` | 取消（标记为 `failed`）→ `true` / `false` |
+| `GET` | `/metrics` | Prometheus（`nevoflux_tasks_total` / `_failed`） |
+| `POST` | `/v1/chat/completions` | OpenAI 兼容（也在 `--openai-addr` 上） |
+| `POST` | `/session/close` | 会话模式：拆除被复用的会话 |
+
+## 提交任务
+
+```bash
+curl -X POST localhost:8080/tasks -H 'Content-Type: application/json' \
+  -d '{"task":"open example.com and report the title","mode":"browser"}'
+# → {"id":"task-0"}
+```
+
+请求体是所有前端共享的**任务契约**：
+
+| 字段 | 类型 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `task` | string | ——（**必填**） | 给 agent 的指令。 |
+| `mode` | string | `"browser"` | agent 模式。 |
+| `profile` | string | 无 | 要克隆的 base 配置名（登录状态）；省略则用空白 base。 |
+| `policy.allow_shell` | bool | `false` | 放行 shell 工具（`run_command`、`bash`）。 |
+| `policy.allow_fs_write` | bool | `false` | 放行文件写入工具。 |
+| `policy.allow_upload` | bool | `false` | 放行 `uploadFile`。 |
+| `policy.domain_allowlist` | string[] | `[]` | 将 `navigate` / `web_fetch` 限制到这些域名（空 = 任意）。 |
+| `wall_clock_secs` | int | 无 | 每任务挂钟截止时间。 |
+| `token_budget` | int | 无 | 每任务 token 消耗上限。 |
+| `idempotent` | bool | `false` | 即使已运行过写操作也重试（调用方声明幂等）。 |
+| `no_retry` | bool | `false` | 完全禁用自动重试。 |
+| `end_session` | bool | `false` | 仅会话模式——在此任务后拆除共享浏览器。 |
+| `save_profile` | bool | `false` | 仅会话模式——拆除时把克隆写回某个 base 配置（隐含结束会话）。 |
+| `save_profile_as` | string | 所克隆的 base | 可选的另存为 base 名。 |
+
+> **策略默认完全锁死。** 不提供 `policy` 时，任务获得**无** shell、**无**文件写入、
+> **无**上传、**任意**域名。请按任务、按需授予能力。
+
+一个完整请求：
+
+```jsonc
+{ "task": "open example.com and report the title",
+  "mode": "browser",
+  "profile": "base1",
+  "policy": { "allow_shell": false, "allow_fs_write": false,
+              "allow_upload": false, "domain_allowlist": ["example.com"] },
+  "wall_clock_secs": 300, "token_budget": 200000,
+  "idempotent": false, "no_retry": false }
+```
+
+### 状态 / 结果
+
+```bash
+curl -s localhost:8080/tasks/task-0
+```
+```jsonc
+{ "id": "task-0",
+  "status": "succeeded",           // queued | running | succeeded | failed
+  "attempts": 1,
+  "output": "The title is Example Domain.",
+  "error": null,
+  "artifacts": [] }
+```
+
+结果与调试包也会**落盘到 `/work` 下的任务工作区**（`result.json`、`debug-bundle/`）。
+
+### 实时事件（SSE）
+
+```bash
+curl -N localhost:8080/tasks/task-0/events
+# event: status
+# data: {"id":"task-0","status":"running","attempts":0,...}
+# event: status
+# data: {"id":"task-0","status":"succeeded","output":"...Example Domain","attempts":1,...}
+```
+
+每次状态变化（以及终态）都会发出一个 `status` 帧，其间夹带保活注释。当任务到达
+`succeeded` / `failed` 时流结束。
+
+### 取消与指标
+
+```bash
+curl -X DELETE localhost:8080/tasks/task-0     # → true（已取消）/ false（已是终态）
+curl localhost:8080/metrics                    # Prometheus：nevoflux_tasks_total / _failed
+```
+
+## 替代接口
+
+三个精简前端把一段提示词映射为一个任务（都归结为同一个运行器）。每个都在主端口上可用，
+也可绑定**专用端口**：
+
+| 接口 | 端点 | 专用端口标志 |
+| --- | --- | --- |
+| OpenAI 兼容 | `POST /v1/chat/completions` | `--openai-addr`（也在 `--http-addr` 上） |
+| MCP（JSON-RPC 2.0） | `POST /mcp` | `--mcp-addr` |
+| ACP（JSON-RPC 2.0） | `POST /acp` | `--acp-addr` |
+
+```bash
+# 每个接口各占一个端口
+nevoflux-agent --daemon --headless \
+  --http-addr 0.0.0.0:8080 --openai-addr 0.0.0.0:8081 \
+  --mcp-addr 0.0.0.0:8082 --acp-addr 0.0.0.0:8083
+```
+
+**OpenAI** —— 最后一条 `user` 消息成为任务：
+
+```bash
+curl -X POST localhost:8081/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"open example.com, report title"}]}'
+# → {"object":"chat.completion","choices":[{"message":{"role":"assistant","content":"...Example Domain"}, ...}]}
+```
+
+**MCP** —— 只有一个工具 `run_browser_task`（外加 `initialize`、`tools/list`）：
+
+```bash
+curl -X POST localhost:8082/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"run_browser_task","arguments":{"task":"open example.com, report title"}}}'
+# → {"result":{"content":[{"type":"text","text":"...Example Domain"}],"isError":false}}
+```
+
+**ACP** —— 一次提示词回合（外加 `initialize`、`session/new`）：
+
+```bash
+curl -X POST localhost:8083/acp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"session/prompt",
+       "params":{"prompt":[{"type":"text","text":"open example.com, report title"}]}}'
+# → {"result":{"stopReason":"end_turn","content":[{"type":"text","text":"...Example Domain"}]}}
+```
+
+> **这些前端刻意做得极简** —— 单工具 MCP；请求/响应式 ACP，无流式 `session/update`
+> 通知；非流式 OpenAI。足以从 OpenAI / MCP / ACP 客户端驱动一个无头任务，但并非完整的
+> 协议实现。
+
+### 精简接口的环境变量覆盖
+
+OpenAI / MCP / ACP 请求只携带提示词，因此 `mode` / `profile` / `policy` / 上限来自
+环境变量。`POST /tasks` 仍可在每次请求中携带全部这些——环境变量只是那些无法携带它们的
+接口的默认值。
+
+| 环境变量 | 字段 | 默认值 |
+| --- | --- | --- |
+| `NEVOFLUX_TASK_MODE` | mode | `browser` |
+| `NEVOFLUX_TASK_PROFILE` | profile | 无 |
+| `NEVOFLUX_POLICY_ALLOW_SHELL` | policy.allow_shell | `false` |
+| `NEVOFLUX_POLICY_ALLOW_FS_WRITE` | policy.allow_fs_write | `false` |
+| `NEVOFLUX_POLICY_ALLOW_UPLOAD` | policy.allow_upload | `false` |
+| `NEVOFLUX_POLICY_DOMAIN_ALLOWLIST` | policy.domain_allowlist | 空（逗号分隔） |
+| `NEVOFLUX_WALL_CLOCK_SECS` | wall_clock_secs | 无 |
+| `NEVOFLUX_TOKEN_BUDGET` | token_budget | 无 |
+| `NEVOFLUX_IDEMPOTENT` | idempotent | `false` |
+| `NEVOFLUX_NO_RETRY` | no_retry | `false` |
+
+布尔值接受 `1` / `true` / `yes`。
+
+## 会话模式
+
+默认每个任务完全隔离：克隆一个全新配置 → 启动浏览器 → 运行 → 杀掉浏览器并删除克隆。设置
+**`NEVOFLUX_SESSION_MODE=1`** 改为运行一段**任务流**：第一个任务启动**一个**浏览器 +
+配置克隆，后续任务**复用**它（任务之间将活动标签软重置为 `about:blank`），直到你结束该流。
+
+```bash
+# 环境中 NEVOFLUX_SESSION_MODE=1
+curl -X POST localhost:8080/tasks -d '{"task":"log in to example.com"}'          # 启动浏览器
+curl -X POST localhost:8080/tasks -d '{"task":"go to the dashboard"}'            # 复用它（共享登录）
+curl -X POST localhost:8080/tasks -d '{"task":"export the report","end_session":true}'  # 运行后拆除
+# 或随时带外结束：
+curl -X POST localhost:8080/session/close        # → {"closed":true|false}
+```
+
+- **顺序驱动任务** —— 提交、等它完成、再提交下一个。共享浏览器由锁串行化，但任务**顺序**
+  由调用方负责。
+- **流内共享状态** —— 任务共享 cookie / localStorage / 登录。被提示注入的任务会影响**同一**
+  流内的后续任务，因此会话模式仅用于**可信、顺序**的流程。跨流隔离得以保留（下一段流会
+  克隆全新的 base 配置）。
+- **崩溃恢复** —— 若共享浏览器在流程中途崩溃，下一个任务会针对同一克隆重新启动它（cookie
+  持久化在磁盘上，登录得以保留）。
+
+**把登录写回 base。** 在任务上设置 `save_profile: true`（或对 `POST /session/close` 传
+`{"save": true}`）以在拆除时把会话克隆写回某个 base 配置（`save_profile_as` 可选择另一个
+base 名）。这要求 base-profiles 挂载**可写**（去掉 `:ro`）。
+
+## 固定脚本模式（无 LLM）
+
+若需要一个**确定性**、**无需 LLM 服务商**的浏览器自动化流水线，把守护进程指向一个 Python
+脚本：
+
+```bash
+NEVOFLUX_HEADLESS_SCRIPT=/opt/nevoflux/fixed-flow.py
+```
+
+一旦设置，**每个无头任务都运行该脚本，而非 LLM agent 循环**。脚本定义
+`def run(task): ...`；守护进程用该接口的任务字符串调用它。`run` **返回**（或打印）的内容
+成为 `output`；抛出异常 → `status: "failed"` 并附带错误。它使用与 agent 相同的浏览器工具
+（在沙箱化解释器中），驱动绑定的无头浏览器——但**零 LLM 调用、无需 API 密钥**（也无需
+GBrain）。
+
+```python
+def run(task):
+    nav = browser_navigate(url="https://example.com/search")
+    tab = nav["tab_id"]                              # navigate 会打开一个新标签
+    browser_fill(selector="#q", value=task, tab_id=tab)
+    browser_click(selector="button[type=submit]", tab_id=tab)
+    browser_wait_for(selector="#results", tab_id=tab, timeout_ms=15000)
+    return browser_get_markdown(tab_id=tab)["markdown"]
+```
+
+两个坑：
+
+1. `browser_navigate` 会打开一个**新的、非活动**标签并返回 `{"tab_id": N}`——把该
+   `tab_id` 贯穿传入后续每次调用，否则工具会报“No active web tab found”。
+2. 工具结果是**结构化**字典，不是字符串——例如 `browser_get_markdown(...)` →
+   `{"markdown","title","url","success"}`。请索引具体字段。
+
+挂载脚本并设置环境变量（Compose）：
+
+```yaml
+environment:
+  NEVOFLUX_HEADLESS_SCRIPT: /opt/nevoflux/fixed-flow.py
+volumes:
+  - ./fixed-flow.py:/opt/nevoflux/fixed-flow.py:ro
+```
+
+模板脚本随发行版位于 `deploy/headless/examples/fixed-flow.py`（基础
+navigate → fill → click → read）与 `fixed-flow-advanced.py`（多步分页 + `try/except`，
+始终返回结构化 `{ok, ...}` 字典）。
+
+## 命令行标志参考
+
+`nevoflux-agent` 二进制上的无头部署标志：
+
+| 标志 | 含义 |
+| --- | --- |
+| `--daemon` | 作为核心守护进程运行。无头模式**必需**。 |
+| `--headless` | 无头自动化模式：为每个任务派生浏览器并提供任务 API。 |
+| `--http-addr <addr>` | 在此绑定任务 API（如 `0.0.0.0:8080`）；同时提供 `/v1/chat/completions`。 |
+| `--openai-addr <addr>` | 在**专用**端口提供 OpenAI 兼容 API。 |
+| `--mcp-addr <addr>` | 在此端口提供 MCP-over-HTTP（`POST /mcp`）。 |
+| `--acp-addr <addr>` | 在此端口提供 ACP-over-HTTP（`POST /acp`）。 |
+
+> 不要与 **`--mcp`**（不带 `--daemon`）混淆，后者运行独立的 stdio MCP 服务器用于
+> [Claude Code 集成](/zh/docs/features/mcp)——这与上面的无头 MCP-over-HTTP 接口是不同的
+> 模式。

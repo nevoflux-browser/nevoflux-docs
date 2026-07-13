@@ -1,0 +1,264 @@
+---
+title: Task API & interfaces
+description: The headless HTTP task API, the OpenAI / MCP / ACP front-ends, session and fixed-script modes, and the full CLI-flag and env-var reference.
+---
+
+In service mode the daemon serves a small HTTP **task API** on `--http-addr`. All
+endpoints are JSON.
+
+## Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/tasks` | Submit a task → `{"id":"task-N"}` |
+| `GET` | `/tasks/:id` | Status / result snapshot |
+| `GET` | `/tasks/:id/events` | **SSE** — `status` frames until terminal |
+| `DELETE` | `/tasks/:id` | Cancel (marks `failed`) → `true` / `false` |
+| `GET` | `/metrics` | Prometheus (`nevoflux_tasks_total` / `_failed`) |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible (also on `--openai-addr`) |
+| `POST` | `/session/close` | Session mode: tear down the reused session |
+
+## Submitting a task
+
+```bash
+curl -X POST localhost:8080/tasks -H 'Content-Type: application/json' \
+  -d '{"task":"open example.com and report the title","mode":"browser"}'
+# → {"id":"task-0"}
+```
+
+The request body is a **task contract** shared by every front-end:
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `task` | string | — (**required**) | The instruction for the agent. |
+| `mode` | string | `"browser"` | Agent mode. |
+| `profile` | string | none | Named base-profile to clone (login state); omit for a blank base. |
+| `policy.allow_shell` | bool | `false` | Admit shell tools (`run_command`, `bash`). |
+| `policy.allow_fs_write` | bool | `false` | Admit filesystem-write tools. |
+| `policy.allow_upload` | bool | `false` | Admit `uploadFile`. |
+| `policy.domain_allowlist` | string[] | `[]` | Restrict `navigate` / `web_fetch` to these domains (empty = any). |
+| `wall_clock_secs` | int | none | Per-task wall-clock deadline. |
+| `token_budget` | int | none | Per-task token-spend cap. |
+| `idempotent` | bool | `false` | Retry even after a mutating tool ran (caller asserts idempotency). |
+| `no_retry` | bool | `false` | Disable auto-retry entirely. |
+| `end_session` | bool | `false` | Session mode only — tear down the shared browser after this task. |
+| `save_profile` | bool | `false` | Session mode only — persist the clone back to a base profile at teardown (implies ending the session). |
+| `save_profile_as` | string | the cloned base | Optional base name to save-as. |
+
+> **Policy defaults to fully locked down.** With no `policy`, a task gets **no**
+> shell, **no** fs-write, **no** upload, and **any** domain. Grant capabilities
+> per task, only as needed.
+
+A full request:
+
+```jsonc
+{ "task": "open example.com and report the title",
+  "mode": "browser",
+  "profile": "base1",
+  "policy": { "allow_shell": false, "allow_fs_write": false,
+              "allow_upload": false, "domain_allowlist": ["example.com"] },
+  "wall_clock_secs": 300, "token_budget": 200000,
+  "idempotent": false, "no_retry": false }
+```
+
+### Status / result
+
+```bash
+curl -s localhost:8080/tasks/task-0
+```
+```jsonc
+{ "id": "task-0",
+  "status": "succeeded",           // queued | running | succeeded | failed
+  "attempts": 1,
+  "output": "The title is Example Domain.",
+  "error": null,
+  "artifacts": [] }
+```
+
+The result and a debug bundle are also **drained to the task workspace under
+`/work`** (`result.json`, `debug-bundle/`).
+
+### Live events (SSE)
+
+```bash
+curl -N localhost:8080/tasks/task-0/events
+# event: status
+# data: {"id":"task-0","status":"running","attempts":0,...}
+# event: status
+# data: {"id":"task-0","status":"succeeded","output":"...Example Domain","attempts":1,...}
+```
+
+A `status` frame is emitted on each change (plus the terminal one), with keep-alive
+comments in between. The stream ends when the task reaches `succeeded` / `failed`.
+
+### Cancel & metrics
+
+```bash
+curl -X DELETE localhost:8080/tasks/task-0     # → true (cancelled) / false (already terminal)
+curl localhost:8080/metrics                    # Prometheus: nevoflux_tasks_total / _failed
+```
+
+## Alternative interfaces
+
+Three thin front-ends map a prompt to a task (all reduce to the same runner). Each
+is available on the main port and can also bind a **dedicated port**:
+
+| Interface | Endpoint | Dedicated-port flag |
+| --- | --- | --- |
+| OpenAI-compatible | `POST /v1/chat/completions` | `--openai-addr` (also on `--http-addr`) |
+| MCP (JSON-RPC 2.0) | `POST /mcp` | `--mcp-addr` |
+| ACP (JSON-RPC 2.0) | `POST /acp` | `--acp-addr` |
+
+```bash
+# each interface on its own port
+nevoflux-agent --daemon --headless \
+  --http-addr 0.0.0.0:8080 --openai-addr 0.0.0.0:8081 \
+  --mcp-addr 0.0.0.0:8082 --acp-addr 0.0.0.0:8083
+```
+
+**OpenAI** — the last `user` message becomes the task:
+
+```bash
+curl -X POST localhost:8081/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"open example.com, report title"}]}'
+# → {"object":"chat.completion","choices":[{"message":{"role":"assistant","content":"...Example Domain"}, ...}]}
+```
+
+**MCP** — one tool, `run_browser_task` (plus `initialize`, `tools/list`):
+
+```bash
+curl -X POST localhost:8082/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"run_browser_task","arguments":{"task":"open example.com, report title"}}}'
+# → {"result":{"content":[{"type":"text","text":"...Example Domain"}],"isError":false}}
+```
+
+**ACP** — a prompt turn (plus `initialize`, `session/new`):
+
+```bash
+curl -X POST localhost:8083/acp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"session/prompt",
+       "params":{"prompt":[{"type":"text","text":"open example.com, report title"}]}}'
+# → {"result":{"stopReason":"end_turn","content":[{"type":"text","text":"...Example Domain"}]}}
+```
+
+> **These front-ends are intentionally minimal** — single-tool MCP;
+> request/response ACP with no streaming `session/update` notifications;
+> non-streaming OpenAI. Enough to drive a headless task from an OpenAI / MCP / ACP
+> client, not full protocol implementations.
+
+### Env-var overrides for the thin interfaces
+
+OpenAI / MCP / ACP requests carry only a prompt, so `mode` / `profile` / `policy` /
+caps come from the environment. `POST /tasks` still takes all of these per request
+— the env vars are only the defaults for the interfaces that can't carry them.
+
+| Env var | Field | Default |
+| --- | --- | --- |
+| `NEVOFLUX_TASK_MODE` | mode | `browser` |
+| `NEVOFLUX_TASK_PROFILE` | profile | none |
+| `NEVOFLUX_POLICY_ALLOW_SHELL` | policy.allow_shell | `false` |
+| `NEVOFLUX_POLICY_ALLOW_FS_WRITE` | policy.allow_fs_write | `false` |
+| `NEVOFLUX_POLICY_ALLOW_UPLOAD` | policy.allow_upload | `false` |
+| `NEVOFLUX_POLICY_DOMAIN_ALLOWLIST` | policy.domain_allowlist | empty (comma-separated) |
+| `NEVOFLUX_WALL_CLOCK_SECS` | wall_clock_secs | none |
+| `NEVOFLUX_TOKEN_BUDGET` | token_budget | none |
+| `NEVOFLUX_IDEMPOTENT` | idempotent | `false` |
+| `NEVOFLUX_NO_RETRY` | no_retry | `false` |
+
+Booleans accept `1` / `true` / `yes`.
+
+## Session mode
+
+By default every task is fully isolated: clone a fresh profile → launch a browser →
+run → kill the browser and delete the clone. Set **`NEVOFLUX_SESSION_MODE=1`** to
+run a **task-flow** instead: the first task launches **one** browser + profile
+clone, and later tasks **reuse** it (the active tab is soft-reset to `about:blank`
+between tasks) until you end the flow.
+
+```bash
+# NEVOFLUX_SESSION_MODE=1 in the environment
+curl -X POST localhost:8080/tasks -d '{"task":"log in to example.com"}'          # launches the browser
+curl -X POST localhost:8080/tasks -d '{"task":"go to the dashboard"}'            # reuses it (shared login)
+curl -X POST localhost:8080/tasks -d '{"task":"export the report","end_session":true}'  # runs, then tears down
+# or end out-of-band at any time:
+curl -X POST localhost:8080/session/close        # → {"closed":true|false}
+```
+
+- **Drive tasks sequentially** — submit, wait for it to finish, then submit the
+  next. The shared browser is serialized by a lock, but task **order** is the
+  caller's job.
+- **Shared state within a flow** — tasks share cookies / localStorage / login. A
+  prompt-injected task can affect later tasks in the **same** flow, so use session
+  mode only for **trusted, sequential** flows. Cross-flow isolation is preserved
+  (the next flow clones a fresh base profile).
+- **Crash recovery** — if the shared browser crashes mid-flow, the next task
+  relaunches it against the same clone (cookies persist on disk, so login survives).
+
+**Persist login back to a base.** Set `save_profile: true` on a task (or
+`POST /session/close` with `{"save": true}`) to write the session's clone back to a
+base profile at teardown (`save_profile_as` picks a different base name). This
+requires the base-profiles mount to be **writable** (drop the `:ro`).
+
+## Fixed-script mode (no LLM)
+
+For a **deterministic** browser-use pipeline that needs **no LLM provider**, point
+the daemon at a Python script:
+
+```bash
+NEVOFLUX_HEADLESS_SCRIPT=/opt/nevoflux/fixed-flow.py
+```
+
+When set, **every headless task runs that script instead of the LLM agent loop**.
+The script defines `def run(task): ...`; the daemon calls it with the interface's
+task string. Whatever `run` **returns** (or prints) becomes the `output`; a raised
+exception → `status: "failed"` with the error. It uses the same browser tools as
+the agent (in the sandboxed interpreter), driving the bound headless browser — but
+with **zero LLM calls and no API key** (and no GBrain needed).
+
+```python
+def run(task):
+    nav = browser_navigate(url="https://example.com/search")
+    tab = nav["tab_id"]                              # navigate opens a NEW tab
+    browser_fill(selector="#q", value=task, tab_id=tab)
+    browser_click(selector="button[type=submit]", tab_id=tab)
+    browser_wait_for(selector="#results", tab_id=tab, timeout_ms=15000)
+    return browser_get_markdown(tab_id=tab)["markdown"]
+```
+
+Two gotchas:
+
+1. `browser_navigate` opens a **new, inactive** tab and returns `{"tab_id": N}` —
+   thread that `tab_id` into every later call, or tools hit "No active web tab found".
+2. Tool results are **structured** dicts, not strings — e.g.
+   `browser_get_markdown(...)` → `{"markdown","title","url","success"}`. Index the field.
+
+Mount the script and set the env var (Compose):
+
+```yaml
+environment:
+  NEVOFLUX_HEADLESS_SCRIPT: /opt/nevoflux/fixed-flow.py
+volumes:
+  - ./fixed-flow.py:/opt/nevoflux/fixed-flow.py:ro
+```
+
+Template scripts ship at `deploy/headless/examples/fixed-flow.py` (basic
+navigate → fill → click → read) and `fixed-flow-advanced.py` (multi-step pagination
++ `try/except`, always returns a structured `{ok, ...}` dict).
+
+## CLI flags reference
+
+The headless deployment flags on the `nevoflux-agent` binary:
+
+| Flag | Meaning |
+| --- | --- |
+| `--daemon` | Run as the core daemon. **Required** for headless mode. |
+| `--headless` | Headless automation mode: spawn a browser per task and serve the task API. |
+| `--http-addr <addr>` | Bind the task API here (e.g. `0.0.0.0:8080`); also serves `/v1/chat/completions`. |
+| `--openai-addr <addr>` | Serve the OpenAI-compatible API on a **dedicated** port. |
+| `--mcp-addr <addr>` | Serve MCP-over-HTTP (`POST /mcp`) on this port. |
+| `--acp-addr <addr>` | Serve ACP-over-HTTP (`POST /acp`) on this port. |
+
+> Not to be confused with **`--mcp`** (no `--daemon`), which runs the separate
+> stdio MCP server for [Claude Code integration](/en/docs/features/mcp) — a
+> different mode from the headless MCP-over-HTTP interface above.

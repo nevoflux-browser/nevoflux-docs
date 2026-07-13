@@ -1,0 +1,164 @@
+---
+title: Docker 镜像
+description: 构建 nevoflux/agent 镜像、构建参数、运行模式、镜像环境变量，以及实时观看（VNC/noVNC）。
+---
+
+`nevoflux/agent` 镜像由 agent 仓库的 `deploy/headless/` 目录构建。它会**从 GitHub
+下载官方预编译发行版**——**无需本地编译**。
+
+## 构建
+
+```bash
+docker build -t nevoflux/agent:latest deploy/headless      # amd64 或 arm64
+```
+
+### 构建参数
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `AGENT_VERSION` | `latest` | agent 发行版标签——**带**前导 `v`（如 `v0.3.10`）。 |
+| `BROWSER_VERSION` | `latest` | browser 发行版标签——**不带**前导 `v`（如 `0.3.10`）。 |
+| `TARGETARCH` | 宿主架构 | `amd64` → `x86_64` 资产，`arm64` → `aarch64`。由 `docker buildx --platform` 设定。 |
+| `PACK_REPOS` | 空 | 空格分隔、要打包内置的 pack（见[内置 packs](#内置-packs)）。 |
+| `INSTALL_GBRAIN` | `1` | 安装并启用 GBrain 知识库（设为 `0` 则完全跳过）。 |
+| `GBRAIN_PIN` | `github:garrytan/gbrain#<pin>` | 固定 GBrain 版本。 |
+| `LLM_PROVIDER` | `anthropic` | 写入镜像内置 `[llm]` 配置的服务商（见下文）。 |
+
+> **为可复现构建固定版本。** `latest` 可能把较新的 agent 与较新的 browser 配在一起，
+> **不可复现**。请同时固定两者：
+>
+> ```bash
+> docker build -t nevoflux/agent:v0.3.10 \
+>   --build-arg AGENT_VERSION=v0.3.10 --build-arg BROWSER_VERSION=0.3.10 \
+>   deploy/headless
+> ```
+
+构建时会用 `checksums-sha256.txt` 对 agent 压缩包做**校验和验证**。
+
+### 多架构
+
+`TARGETARCH` 选择下载 `x86_64` / `aarch64`。在 arm64 宿主上——或使用
+`docker buildx build --platform linux/arm64`——它会自动拉取 arm 构建。
+
+### 从本地（未发布）二进制构建 —— `Dockerfile.local`
+
+要测试本地构建或未发布的守护进程/浏览器改动（尚未进入发行版的特性），把四个产物暂存到
+`deploy/headless/`，再构建基于 `COPY` 的变体：
+
+```bash
+# 暂存到 deploy/headless/：dist/nevoflux/（浏览器打包目录树）、
+# nevoflux-agent（构建好的守护进程）、libonnxruntime.so（v1.24.x）、models/fastembed/
+docker build -f deploy/headless/Dockerfile.local -t nevoflux/agent:local deploy/headless
+```
+
+在 Compose 中设置 `build.dockerfile: Dockerfile.local`。
+
+## 镜像内置了什么
+
+### GBrain（知识库）—— 默认开启
+
+当 `INSTALL_GBRAIN=1`（默认）时，构建过程会：
+
+- 安装 `bun` 并将 `bun add <GBRAIN_PIN>` 装到 `~/.nevoflux/brain-tool`，并创建 brain 目录 `~/.gbrain`；
+- 写入 `~/.config/nevoflux/config.toml`，包含 `[knowledge_base.brain] enabled = true` 和 `[llm] provider = <LLM_PROVIDER>`。
+
+GBrain 的 LLM 调用会经由进程内网关路由到该服务商，因此**无需单独的 GBrain 密钥**——运行时
+只需该服务商的 `*_API_KEY`（如 `ANTHROPIC_API_KEY`）。
+
+```bash
+# 默认：gbrain 开启，服务商 anthropic（运行时需要 ANTHROPIC_API_KEY）
+docker build -t nevoflux/agent:latest deploy/headless
+
+# 换服务商、固定版本或禁用：
+docker build \
+  --build-arg LLM_PROVIDER=openai \      # 然后运行时设置 OPENAI_API_KEY
+  --build-arg GBRAIN_PIN=github:garrytan/gbrain#<sha> \
+  --build-arg INSTALL_GBRAIN=0 \         # 完全跳过 gbrain
+  -t nevoflux/agent:latest deploy/headless
+```
+
+> 如果你**挂载自己的** `config.toml`，请保留 `[knowledge_base.brain] enabled = true`
+> 以及可用的 `[llm]` 服务商，否则 GBrain 不会启动。没有可用服务商时，浏览器任务与 brain
+> 存储仍可工作，但 GBrain 的 LLM 综合（`brain_think`）不会。
+
+### 内置 packs
+
+pack 安装走守护进程的 RPC（没有离线安装器），因此 pack 会在**构建时克隆进镜像**，并在
+守护进程启动后于**启动时安装**。即便数据目录是临时的（tmpfs）也可用——每次启动都会从
+内置克隆重新应用 pack。
+
+```bash
+docker build -t nevoflux/agent:latest \
+  --build-arg PACK_REPOS="owner/pack-repo https://github.com/x/y.git" \
+  deploy/headless
+# 克隆到 /opt/packs/<name>；守护进程开始监听后，entrypoint 运行 `pack install`。
+```
+
+`PACK_REPOS` 以空格分隔——可写 GitHub `owner/repo` 简写或完整 git URL。为空则不安装任何
+pack。pack 格式参见 [Packs](/zh/docs/packs)。
+
+## 运行 —— 服务模式（已加固）
+
+```bash
+docker run --rm -p 8080:8080 \
+  --read-only --tmpfs /tmp --tmpfs /var/nevoflux/data \
+  --tmpfs /home/nevo/.gbrain --tmpfs /home/nevo/.cache \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 512 --memory 4g --cpus 2 \
+  -v "$PWD/out:/work" \
+  -v nevoflux-base-profiles:/base-profiles:ro \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  nevoflux/agent:latest
+```
+
+- `/work` 是每个任务的 `result.json` + `debug-bundle/` + 产物的落盘位置。
+- `base-profiles`（只读）存放预先登录的模板配置，按任务克隆。
+- 容器以只读运行；守护进程只写入上面的 tmpfs 挂载。
+
+默认命令为 `--daemon --headless --http-addr 0.0.0.0:8080`，它在同一端口也提供
+OpenAI 兼容的 `/v1/chat/completions`。要把 OpenAI / MCP / ACP 拆到各自端口，请覆盖命令
+——见[任务 API 与接口](/zh/docs/deployment/task-api#替代接口)。
+
+## 实时观看（VNC / noVNC）
+
+设置 `NEVOFLUX_VNC=1`（并提供密码文件）即可实时观看运行。届时镜像会运行 `x11vnc`
+（`:5900` 上的原始 VNC）**以及** `websockify`（在 `:6080` 上提供 noVNC）：
+
+```bash
+docker run --rm -p 8080:8080 -p 6080:6080 -p 5900:5900 \
+  -e NEVOFLUX_VNC=1 -e NEVOFLUX_VNC_PASSWD=/etc/nevoflux/vncpasswd \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  nevoflux/agent:latest
+# 在任意浏览器中观看：http://localhost:6080/vnc.html
+# 或用原生 VNC 客户端：localhost:5900
+```
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `NEVOFLUX_VNC` | `1` 启用原始 VNC（`:5900`）+ noVNC（`:6080`）。默认关闭。 |
+| `NEVOFLUX_VNC_PASSWD` | VNC 密码文件路径（默认 `/etc/nevoflux/vncpasswd`）。 |
+| `NEVOFLUX_VNC_VIEWONLY` | `1` = 仅观看、不可输入——这样不会干扰自动化。 |
+
+> **生产环境请关闭 VNC。** 原始 VNC / noVNC 端口是一个远程控制面。仅可在带认证的 HTTPS
+> 代理或 SSH 隧道之后暴露。
+
+## 镜像环境变量
+
+以下已烘焙进镜像（你很少需要改动）：
+
+| 环境变量 | 值 | 用途 |
+| --- | --- | --- |
+| `NEVOFLUX_DATA_DIR` | `/var/nevoflux/data` | 守护进程锁 / 端口 / 数据库（挂为 tmpfs）。 |
+| `NEVOFLUX_BROWSER_BIN` | `/opt/nevoflux/nevoflux` | 内置浏览器二进制。 |
+| `NEVOFLUX_BASE_PROFILES` | `/base-profiles` | 读取 base 登录配置的位置。 |
+| `DISPLAY` | `:99` | Xvfb 虚拟显示。 |
+| `HOME` | `/home/nevo` | 非 root 家目录（GBrain 与缓存都在此）。 |
+| `HF_HUB_OFFLINE` | `1` | 向量嵌入离线运行（模型已内置）。 |
+| `MOZ_DISABLE_CONTENT_SANDBOX` | `1` | 容器内浏览器所需。 |
+
+## 启动顺序
+
+entrypoint（在 `tini` 之下）依次运行：**dbus** → **Xvfb** →*（可选 VNC）*→
+**GBrain 初始化** → **守护进程**。在守护进程模式下，它会先后台启动守护进程，待其开始
+监听后安装内置 pack，然后交接控制权（转发 `SIGTERM`/`SIGINT` 以干净关闭）。非守护进程
+调用（如 `config`、`pack`）则直接运行。

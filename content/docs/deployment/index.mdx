@@ -1,0 +1,94 @@
+---
+title: Headless (Docker)
+description: Run NevoFlux Agent as a containerized service — a headless browser driven by an HTTP task API, with no GUI. Added in agent v0.3.10.
+---
+
+NevoFlux Agent can run **headless**, inside a container, with no desktop. The
+official **`nevoflux/agent`** image packages the daemon, a headless browser, and
+the built-in knowledge base, and serves an HTTP **task API**. You submit a natural-
+language task; the agent drives a real browser (automation + computer use +
+shell/fs tools) and returns the result.
+
+> **"Headless" is the *deployment* mode, not a reduced feature set.** A headless
+> task can do everything a desktop session can — browse, use tools, run skills, and
+> read/write the knowledge base. The only difference is there is no visible window.
+
+This section is new in **nevoflux-agent v0.3.10**. It covers:
+
+- **[Docker image](/en/docs/deployment/docker)** — build it, its build args, run modes, and live-view (VNC).
+- **[Docker Compose](/en/docs/deployment/docker-compose)** — the shipped `docker-compose.yml`, fully annotated.
+- **[Task API & interfaces](/en/docs/deployment/task-api)** — the HTTP task API, the OpenAI / MCP / ACP front-ends, session mode, fixed-script mode, and the full env-var / flag reference.
+
+## Quick start
+
+```bash
+# 1. build the image (downloads prebuilt releases from GitHub — no local compile)
+docker build -t nevoflux/agent:latest deploy/headless
+
+# 2. run the long-running service (needs your provider key at runtime)
+docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:latest
+
+# 3. submit a browser task
+curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
+  -d '{"task":"open example.com and report the title","mode":"browser"}'
+# → {"id":"task-0"}
+curl -s localhost:8080/tasks/task-0
+# → {"id":"task-0","status":"succeeded","output":"The title is Example Domain.", ...}
+```
+
+Prefer Compose? See **[Docker Compose](/en/docs/deployment/docker-compose)** — it
+packages the same run with all the hardening flags pre-applied.
+
+## What's in the image
+
+| Component | Detail |
+| --- | --- |
+| **Daemon** | `nevoflux-agent` (downloaded from the agent release), the core processing server |
+| **Browser** | the headless Gecko build (downloaded from the browser release) |
+| **Display** | `Xvfb` virtual X display (`:99`) — the Linux browser needs a display |
+| **Knowledge base** | **GBrain** installed and enabled by default (see [Knowledge Base](/en/docs/knowledge-base)) |
+| **Base image** | `debian:bookworm-slim`, runs as a **non-root** user (`nevo`, uid 10001), `tini` as PID 1 |
+| **Embeddings** | ONNX Runtime + the `e5` model bundled — search runs fully offline (`HF_HUB_OFFLINE=1`) |
+
+## Two run models — pick by trust
+
+Security in headless mode depends on **container granularity**, because the
+container *is* the sandbox — the product does not build its own. Shell / fs tools
+run inside the daemon process, so the boundary is the container, plus its network
+egress policy and the absence of host credential mounts.
+
+| Model | Command | Use for |
+| --- | --- | --- |
+| **Service mode** | `--daemon --headless --http-addr 0.0.0.0:8080` | **Trusted tasks.** One long-running daemon serves many tasks over time. This is the verified, fully-wired path in v0.3.10. |
+| **One container per task** | a fresh container per task, torn down after | **Untrusted tasks.** Isolation per task; nothing survives between tasks. |
+
+> **Why granularity matters.** Because `bash` / `run_command` execute in the daemon
+> process, a long-lived container that serves *many untrusted* tasks re-opens
+> cross-task poisoning (one task can leave state that affects the next). For
+> untrusted workloads, give **each task its own disposable container**.
+
+The **hard boundary** is set outside the app:
+
+- **Network egress policy** — allowlist the LLM API + your task domains (an egress proxy or a firewalled network / k8s `NetworkPolicy`).
+- **No host credential mounts** — mount only `/work` (results) and read-only base-profiles. Prefer injecting the API key via a front proxy so a prompt-injected agent can't read it from the environment.
+
+In-process defenses (per-task tool allowlist, fs-sandbox, `SENSITIVE_PATHS`,
+domain checks) are defense-in-depth **layers**, not the boundary.
+
+> **v0.3.10 status of the one-shot path.** The shipped deploy assets include an
+> `oneshot` Compose service and a `run --task …` one-shot form, but that CLI
+> subcommand is **not yet wired into the v0.3.10 agent binary** — only the
+> `--daemon --headless` service mode is. Until it lands, get true per-task
+> isolation by running a **fresh service container per task** (start it, submit one
+> task, tear the container down), or use [session mode](/en/docs/deployment/task-api#session-mode)
+> with `end_session` for trusted sequential flows. See the
+> [Compose page](/en/docs/deployment/docker-compose#the-oneshot-service) for details.
+
+## Kubernetes
+
+For untrusted workloads at scale, run **one Job per task**: `restartPolicy: Never`,
+`activeDeadlineSeconds` = your wall-clock cap, a `securityContext` with
+`runAsNonRoot` / `readOnlyRootFilesystem` / `seccompProfile: RuntimeDefault` /
+`drop: ["ALL"]`, `emptyDir` for `/work` and the data dir, a `NetworkPolicy` for
+egress, and base-profiles as a read-only volume. Concurrency and warm capacity are
+the platform's job — the product runs exactly one browser per task.
