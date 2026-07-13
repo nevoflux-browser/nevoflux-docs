@@ -1,0 +1,87 @@
+---
+title: 无头部署（Docker）
+description: 将 NevoFlux Agent 作为容器化服务运行——由 HTTP 任务 API 驱动的无头浏览器，无需图形界面。自 agent v0.3.10 起提供。
+---
+
+NevoFlux Agent 可以在容器中以**无头（headless）**方式运行，无需桌面环境。官方
+**`nevoflux/agent`** 镜像打包了守护进程、无头浏览器以及内置知识库，并对外提供一个
+HTTP **任务 API**。你提交一条自然语言任务，agent 便会驱动真实浏览器（自动化 + 计算机
+控制 + shell/文件工具）并返回结果。
+
+> **“无头”指的是*部署*模式，而非功能缩水。** 无头任务能完成桌面会话所能做的一切——
+> 浏览网页、使用工具、运行技能、读写知识库。唯一的区别是没有可见窗口。
+
+本章节为 **nevoflux-agent v0.3.10** 新增内容，包括：
+
+- **[Docker 镜像](/zh/docs/deployment/docker)** —— 如何构建、构建参数、运行模式以及实时观看（VNC）。
+- **[Docker Compose](/zh/docs/deployment/docker-compose)** —— 随发行版附带的 `docker-compose.yml`，逐项讲解。
+- **[任务 API 与接口](/zh/docs/deployment/task-api)** —— HTTP 任务 API、OpenAI / MCP / ACP 前端、会话模式、固定脚本模式，以及完整的环境变量 / 命令行标志参考。
+
+## 快速开始
+
+```bash
+# 1. 构建镜像（从 GitHub 下载预编译发行版——无需本地编译）
+docker build -t nevoflux/agent:latest deploy/headless
+
+# 2. 运行长驻服务（运行时需要你的服务商密钥）
+docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:latest
+
+# 3. 提交一个浏览器任务
+curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
+  -d '{"task":"open example.com and report the title","mode":"browser"}'
+# → {"id":"task-0"}
+curl -s localhost:8080/tasks/task-0
+# → {"id":"task-0","status":"succeeded","output":"The title is Example Domain.", ...}
+```
+
+更喜欢用 Compose？请看 **[Docker Compose](/zh/docs/deployment/docker-compose)** ——
+它将同样的运行方式连同所有加固参数一起预置好了。
+
+## 镜像里有什么
+
+| 组件 | 说明 |
+| --- | --- |
+| **守护进程** | `nevoflux-agent`（从 agent 发行版下载），核心处理服务 |
+| **浏览器** | 无头 Gecko 构建（从 browser 发行版下载） |
+| **显示** | `Xvfb` 虚拟 X 显示（`:99`）—— Linux 浏览器需要一个显示 |
+| **知识库** | 默认安装并启用 **GBrain**（参见[知识库](/zh/docs/knowledge-base)） |
+| **基础镜像** | `debian:bookworm-slim`，以**非 root** 用户（`nevo`，uid 10001）运行，`tini` 作为 PID 1 |
+| **向量嵌入** | 内置 ONNX Runtime + `e5` 模型——搜索完全离线运行（`HF_HUB_OFFLINE=1`） |
+
+## 两种运行模式——按信任级别选择
+
+无头模式的安全性取决于**容器粒度**，因为容器*即*沙箱——本产品并不自建沙箱。shell /
+文件工具运行在守护进程内，因此边界就是容器本身，再加上它的网络出口策略以及不挂载宿主
+凭据。
+
+| 模式 | 命令 | 适用于 |
+| --- | --- | --- |
+| **服务模式** | `--daemon --headless --http-addr 0.0.0.0:8080` | **可信任务。** 一个长驻守护进程随时间服务多个任务。这是 v0.3.10 中已验证、完整接通的路径。 |
+| **一任务一容器** | 每个任务一个全新容器，用后即销毁 | **不可信任务。** 每个任务相互隔离，任务之间不留存任何状态。 |
+
+> **为何粒度很重要。** 由于 `bash` / `run_command` 在守护进程内执行，一个长驻容器若服务
+> *多个不可信*任务，就会重新打开跨任务污染的风险（一个任务可能留下状态影响下一个）。
+> 对于不可信负载，请为**每个任务分配独立的一次性容器**。
+
+**硬边界**由应用之外设定：
+
+- **网络出口策略** —— 白名单只放行 LLM API 与你的任务域名（出口代理，或有防火墙的网络 / k8s `NetworkPolicy`）。
+- **不挂载宿主凭据** —— 只挂载 `/work`（结果）和只读的 base-profiles。最好通过前置代理注入 API 密钥，使被提示注入的 agent 无法从环境变量读取它。
+
+进程内的防护（每任务工具白名单、文件沙箱、`SENSITIVE_PATHS`、域名校验）是纵深防御的
+**层**，而非边界。
+
+> **v0.3.10 中一次性路径的现状。** 随附的部署资产包含 `oneshot` Compose 服务与
+> `run --task …` 一次性形式，但该 CLI 子命令**尚未接入 v0.3.10 的 agent 二进制**——
+> 目前只有 `--daemon --headless` 服务模式生效。在其落地之前，可通过**为每个任务运行一个
+> 全新的服务容器**（启动、提交一个任务、销毁容器）来获得真正的按任务隔离，或对可信的
+> 顺序流程使用带 `end_session` 的[会话模式](/zh/docs/deployment/task-api#会话模式)。
+> 详见 [Compose 页面](/zh/docs/deployment/docker-compose#oneshot-服务)。
+
+## Kubernetes
+
+对于规模化的不可信负载，请**每个任务一个 Job**：`restartPolicy: Never`、
+`activeDeadlineSeconds` = 你的挂钟上限、`securityContext` 设置
+`runAsNonRoot` / `readOnlyRootFilesystem` / `seccompProfile: RuntimeDefault` /
+`drop: ["ALL"]`、`/work` 与数据目录用 `emptyDir`、出口用 `NetworkPolicy`、base-profiles
+作为只读卷。并发与预热容量由平台负责——本产品每个任务只运行一个浏览器。

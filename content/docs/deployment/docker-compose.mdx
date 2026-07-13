@@ -1,0 +1,169 @@
+---
+title: Docker Compose
+description: The shipped docker-compose.yml for headless NevoFlux Agent — services, environment, volumes, tmpfs, and container hardening, fully explained.
+---
+
+`deploy/headless/docker-compose.yml` packages the `docker run` invocations as
+reusable, pre-hardened services, so you don't retype the flags. It defines two
+services.
+
+| Service | Mode | Use for |
+| --- | --- | --- |
+| **`headless`** | long-running service (`--daemon --headless --http-addr 0.0.0.0:8080`) | **Trusted tasks.** Serves the task API on `:8080`. Started by `docker compose up`. |
+| **`oneshot`** | one task per container | **Untrusted tasks.** Gated behind the `oneshot` Compose profile so `up` doesn't start it. |
+
+Both apply the same container hardening (`read_only`, `cap_drop: ALL`,
+`no-new-privileges`, `pids` / cpu / memory limits, tmpfs data dir) and the same
+volumes (`./out:/work`, `base-profiles:/base-profiles:ro`).
+
+## Use it
+
+```bash
+# 0. one-time: put an API key (and optionally an egress proxy) in the environment
+export ANTHROPIC_API_KEY=sk-...
+export EGRESS_PROXY=http://egress:3128
+
+# 1. build the image
+docker compose build
+
+# 2. service mode (trusted): serve the task API
+docker compose up
+#   curl -X POST localhost:8080/tasks -d '{"task":"open example.com, report title","mode":"browser"}'
+#   curl localhost:8080/metrics
+```
+
+## The `headless` service, annotated
+
+```yaml
+services:
+  headless:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Image is DOWNLOADED from GitHub releases (no local compile). Pin versions:
+      #   args: { AGENT_VERSION: v0.3.10, BROWSER_VERSION: 0.3.10 }   # default: latest
+      # To build from locally-staged artifacts instead, set: dockerfile: Dockerfile.local
+    image: nevoflux/agent:latest
+    command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080"]
+    ports:
+      - "8080:8080"       # task API (+ OpenAI /v1): POST /tasks, GET /tasks/:id[/events], /metrics
+      # - "8081:8081"     # dedicated OpenAI  (needs --openai-addr)
+      # - "8082:8082"     # dedicated MCP     (needs --mcp-addr)
+      # - "8083:8083"     # dedicated ACP     (needs --acp-addr)
+      # - "6080:6080"     # noVNC in a browser: http://localhost:6080/vnc.html (NEVOFLUX_VNC=1)
+      # - "5900:5900"     # raw VNC for native clients (NEVOFLUX_VNC=1). Keep both off in prod.
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY (or your provider's key)}"
+      # HTTP_PROXY: "${EGRESS_PROXY}"        # route egress through a proxy (also set NO_PROXY below)
+      # HTTPS_PROXY: "${EGRESS_PROXY}"
+      # NO_PROXY: "127.0.0.1,localhost"      # so the in-process gateway isn't proxied
+      NEVOFLUX_VNC: "0"                       # 1 (+ password file) to watch live on :5900 / :6080
+      RUST_LOG: "info"                        # log level (stderr → docker compose logs)
+      # NEVOFLUX_HEADLESS_SCRIPT: /opt/nevoflux/fixed-flow.py   # fixed-script mode (no LLM)
+      # NEVOFLUX_SESSION_MODE: "1"            # reuse ONE browser across a trusted task-flow
+    volumes:
+      - ./out:/work                           # drained result.json + debug-bundle + artifacts
+      - base-profiles:/base-profiles:ro       # pre-authenticated login templates (cloned per task)
+      # - ./fixed-flow.py:/opt/nevoflux/fixed-flow.py:ro
+    tmpfs:
+      - /tmp
+      - /var/nevoflux/data                    # daemon.port / db — ephemeral
+      - /home/nevo/.gbrain                     # GBrain DB (HOME is on the read-only rootfs)
+      - /home/nevo/.cache                      # bun / misc caches
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+      # - "seccomp=./seccomp.json"            # add a profile once tuned
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4g
+          pids: 512
+    restart: "no"
+    # networks: [egress-restricted]           # attach to an egress-restricted network
+
+volumes:
+  base-profiles:
+    # external: true                          # reuse an existing named volume
+```
+
+### Notes on the config
+
+- **`command`** — `--headless` serves the task API and spawns a browser per task.
+  The task-API port also serves the OpenAI-compatible `/v1/chat/completions`. To
+  put OpenAI / MCP / ACP on their own ports, add their flags and publish the ports:
+  ```yaml
+  command: ["--daemon","--headless","--http-addr","0.0.0.0:8080",
+            "--openai-addr","0.0.0.0:8081","--mcp-addr","0.0.0.0:8082","--acp-addr","0.0.0.0:8083"]
+  ```
+- **Provider key** — the daemon reads the provider-specific var (`ANTHROPIC_API_KEY`
+  / `OPENAI_API_KEY` / …). It must match the image's baked `[llm].provider`; for
+  another provider, set its key **and** rebuild with `--build-arg LLM_PROVIDER=…`.
+- **Egress proxy** — do **not** set `HTTP_PROXY` / `HTTPS_PROXY` to an empty string
+  (an empty proxy can hang the client). Leave them unset for direct egress, or set
+  them to a real proxy **plus** `NO_PROXY: "127.0.0.1,localhost"`.
+- **`pids`** — set under `deploy.resources.limits`; Compose v2 rejects setting both
+  `pids_limit` and `deploy.resources.limits.pids`.
+- **Networks** — Compose can't express an egress allowlist itself. Put `headless`
+  on a network whose egress is restricted (external firewall, a proxy sidecar, or a
+  k8s `NetworkPolicy`).
+
+## The `oneshot` service
+
+```yaml
+  oneshot:
+    profiles: ["oneshot"]                     # not started by `docker compose up`
+    image: nevoflux/agent:latest
+    build: { context: ., dockerfile: Dockerfile }
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - ./out:/work
+      - base-profiles:/base-profiles:ro
+    tmpfs: [/tmp, /var/nevoflux/data, /home/nevo/.gbrain, /home/nevo/.cache]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    deploy: { resources: { limits: { cpus: "2.0", memory: 4g, pids: 512 } } }
+```
+
+It is meant to be invoked per task, passing `run --task …` args to the entrypoint:
+
+```bash
+docker compose --profile oneshot run --rm oneshot \
+  run --task "open example.com and report the title" \
+      --profile base1 --policy browser-only --wall-clock 300s --token-budget 200k
+```
+
+> **v0.3.10 caveat.** The `oneshot` service and the `run --task` one-shot form ship
+> in the deploy assets, but the `run` subcommand is **not yet wired into the
+> v0.3.10 agent binary** — it is currently ignored, and only `--daemon --headless`
+> service mode is active. Until it lands, get per-task isolation by running a
+> **fresh `headless` container per task** (bring it up, submit one task, tear it
+> down), or use [session mode](/en/docs/deployment/task-api#session-mode) with
+> `end_session` for trusted sequential flows.
+
+## What to change for your setup
+
+| Where | Change |
+| --- | --- |
+| `environment.ANTHROPIC_API_KEY` | Your provider key. Better: leave it empty and inject via `HTTP_PROXY` so a prompt-injected agent can't read it from env. |
+| `HTTP_PROXY` / `HTTPS_PROXY` (`EGRESS_PROXY`) | Point at an egress proxy that **allowlists** the LLM API + your task domains — this is the hard network boundary. |
+| `volumes: base-profiles` | Populate this named volume once with pre-authenticated login profiles (a human logs in), or set `external: true` to reuse one; it's cloned per task. |
+| `volumes: ./out:/work` | Host dir where each task's `result.json` + `debug-bundle/` are drained. |
+| `ports` / VNC | Uncomment `6080` / `5900` **and** set `NEVOFLUX_VNC=1` (+ a password file) only to watch a run live; keep off in prod. |
+| `deploy.resources.limits` | Tune cpu / memory / pids per host. |
+| `security_opt: seccomp` | Add a tuned seccomp profile once available. |
+| `networks` | Attach `headless` to an egress-restricted network. |
+
+## Base profiles (login state)
+
+A **base profile** is a pre-authenticated browser profile a human logs in **once**.
+Each task **clones** it (never touches the original), so tasks start already logged
+in. Populate the `base-profiles` named volume once, then reference a profile by
+name — via the `profile` field on `POST /tasks`, or `NEVOFLUX_TASK_PROFILE` for the
+thin interfaces. Keep the mount **read-only** so tasks can't overwrite a base
+credential; drop `:ro` only if you use [session mode's](/en/docs/deployment/task-api#session-mode)
+`save_profile` to persist a clone back.
