@@ -1,0 +1,110 @@
+---
+title: Scheduled Tasks & Goals
+description: Run tasks on a calendar schedule, and let the agent pursue a goal that re-evaluates itself after every turn.
+---
+
+Beyond a single conversation, NevoFlux can run work **on a schedule** and pursue a
+**goal** that it checks after every turn. These arrived in v0.3.11 as the
+`/schedule` and `/goal` skills. For sub-hourly, event-driven repetition see
+[Loops](/en/docs/features/automation#loops-recurring-tasks) instead.
+
+## Scheduled tasks (`/schedule`)
+
+A schedule is a recurring or one-off background job — "routines" style. Ask the
+agent in plain language and it creates one for you:
+
+```text
+/schedule every weekday at 9am, summarize my unread newsletters and notify me
+```
+
+The agent always confirms the schedule's **name** and a human-readable **cadence**
+with you before creating it.
+
+- **Cadence** — a 5-field cron expression (e.g. `0 9 * * *`) for recurring jobs, or a
+  one-off `at` time (RFC3339, or Unix seconds). The two are mutually exclusive.
+- **Minimum cadence is 1 hour.** A cron that fires more often is rejected — use a
+  [loop](/en/docs/features/automation#loops-recurring-tasks) for sub-hourly work.
+- **What runs** — either a raw prompt re-issued each fire, or a wrapped skill.
+- **Mode** — `chat` (default), `browser`, or `agent`, picking the tool catalog each
+  run gets.
+- **Browser policy** — `none` (default, no browser needed), `headless` (background
+  web or login tasks), or `live` (borrows your **current** visible window/tab — use
+  only when the run genuinely needs that state). If the required browser isn't
+  available at fire time, the run can `defer` or `skip` (`on_unavailable`).
+- **Catch-up** — with `catch_up` on, a schedule that was missed while NevoFlux was
+  offline fires once on the next start.
+
+Schedules fire from the NevoFlux daemon, so they run whenever NevoFlux is running;
+the poll granularity is well within the 1-hour minimum cadence.
+
+### Managing schedules
+
+The agent exposes these tools (also surfaced to the sidebar UI):
+
+| Tool | What it does |
+| --- | --- |
+| `schedule_create` | Create a recurring or one-off job |
+| `schedule_list` | List all schedules (active, paused, ran, cancelled) |
+| `schedule_pause` / `schedule_resume` | Pause a schedule, or resume it (next fire recomputed from now) |
+| `schedule_run_now` | Fire once immediately, without disturbing the normal cadence |
+| `schedule_cancel` | Cancel permanently (terminal) |
+| `schedule_runs` | Recent run history — status, timing, errors |
+
+### Notifications
+
+A scheduled (or any) run can reach you even with the sidebar closed via the
+**`notify_user`** tool — it sends a desktop notification plus an in-app toast. It's
+meant for reminders and things you explicitly asked to be told, not for narrating
+ordinary progress.
+
+*Example:* "every day at 8am, check the weather and **notify me** if rain is
+forecast."
+
+## Goal-driven runs
+
+A schedule can carry a natural-language **success condition** (`goal_condition`).
+When set, each fire runs a *goal loop*: the agent re-evaluates after every turn and
+keeps going until the goal is met or it runs out of turns/budget.
+
+- `goal_max_turns` — turn budget for a goal-enabled run (default 20).
+- `max_tokens_per_run` — token budget per run; goal turns **and** evaluator calls
+  both count against it.
+- `evaluator_model` / `evaluator_provider` — which model/provider judges the
+  condition (defaults to the current one; ACP/CLI providers judge in a degraded
+  one-shot mode).
+
+## Session goals (`/goal`)
+
+You can also give the agent a goal for the **current conversation**, independent of
+any schedule:
+
+```text
+/goal keep fixing until `cargo test` exits 0
+```
+
+After each turn, completion is decided by:
+
+1. an **optional programmatic `check`** over recent tool results — if it holds, the
+   goal is met with **no model call at all** (so it works with no API key, or with
+   ACP/CLI-only providers); otherwise
+2. an independent, zero-tool **evaluator model**.
+
+Prefer a `check` whenever the condition is machine-verifiable (an exit code, a
+value read back from a page, a knowledge-base query returning results). A check has:
+
+- `matches` — a substring, or a `/regex/` when slash-wrapped (required)
+- `tool` — restrict to one tool's output (optional; omit to match any tool)
+- `negate` — require the pattern to be **absent** instead of present (optional)
+
+The condition itself must be self-provable from the conversation's output (state the
+check, e.g. "cargo test exits 0"), max 4000 characters, with an optional `max_turns`
+(default 20).
+
+| Tool | What it does |
+| --- | --- |
+| `goal_set` | Set the session's completion condition (+ optional `check`, `max_turns`, evaluator) |
+| `goal_status` | Report status (active / achieved / expired / cleared / none), turns used, last reason |
+| `goal_clear` | Clear the active goal and stop post-turn evaluation |
+
+> The same `check` semantics power a loop's per-iteration `verify` option — see
+> [Loops](/en/docs/features/automation#loops-recurring-tasks).

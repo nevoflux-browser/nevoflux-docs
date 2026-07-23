@@ -25,14 +25,24 @@ NevoFlux 支持众多 LLM 提供商。在
 | Perplexity | `perplexity` | `llama-3.1-sonar-small-128k-online` | `PERPLEXITY_API_KEY` |
 | Together | `together` | `meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo` | `TOGETHER_API_KEY` |
 | Claude Code(CLI) | `claude-code` | `sonnet` | `ANTHROPIC_API_KEY` |
+| Antigravity | `antigravity`(别名 `antigravity-cli`) | `default` | ——(免密钥) |
 | Gemini CLI | `gemini-cli` | `gemini-2.5-pro` | `GEMINI_API_KEY` |
 | Kimi Agent | `kimi-agent`(别名 `kimi`) | `kimi-latest` | `MOONSHOT_API_KEY` |
 | OpenClaw | `openclaw` | `default` | `OPENCLAW_API_KEY` |
 
 > **提供商类型。** AI Models 标签页将它们分为 **service**(云端 API)、
-> **local**(Ollama)、**CLI**(`claude-code`、`gemini-cli`、`kimi-agent` —— 运行本地
+> **local**(Ollama)、**CLI**(`claude-code`、`antigravity`、`kimi-agent` —— 运行本地
 > 命令行智能体,自行管理鉴权)和 **agent**(`openclaw`)。CLI/agent 类提供商以流式
 > 输出;少数提供商(尤其是 **Ollama**)不支持流式。
+
+> **Antigravity(v0.3.12 新增)。** 该提供商通过社区适配器
+> [`antigravity-acp`](https://github.com/shubzkothekar/antigravity-acp) 驱动 Google 的
+> `agy` CLI。它**免密钥** —— API 密钥留空即可,表中的 `GEMINI_API_KEY` 仅为占位符。
+> 选用前请先安装两个命令行工具并加入 `PATH`:`agy` CLI 本身,以及 `antigravity-acp`
+> 适配器二进制(从适配器 releases 下载后重命名为 `antigravity-acp`,Windows 上为
+> `antigravity-acp.exe`)。模型保持 `default` 即可使用 agy 自身的默认模型。Antigravity
+> 在 AI Models 标签页中取代了原来的 **Gemini CLI** 磁贴;若在 `config.toml` 中手动设置,
+> `gemini-cli` 提供商仍然可用。
 
 ## 提供密钥
 

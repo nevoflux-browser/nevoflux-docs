@@ -13,8 +13,13 @@ Providers are shown as cards in two groups:
 - **LLM Providers** — cloud APIs (Anthropic, OpenAI, DeepSeek, Qwen, Gemini, Groq,
   OpenRouter, Mistral, xAI/Grok, Cohere, Perplexity, Together) and **local**
   (Ollama).
-- **Agents** — command-line/agent providers (Claude Code, Gemini CLI, Kimi Agent,
+- **Agents** — command-line/agent providers (Claude Code, Antigravity, Kimi Agent,
   OpenClaw).
+
+> **Antigravity** replaced the **Gemini CLI** tile in v0.3.12. It is keyless and
+> requires the `agy` and `antigravity-acp` CLIs on your `PATH` — see
+> [Providers & API keys](/en/docs/configuration/providers). The `gemini-cli` provider
+> is still usable if you configure it directly in `config.toml`.
 
 A card shows an **Active** badge for the current provider and a checkmark when it is
 configured.

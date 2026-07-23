@@ -38,5 +38,12 @@ nevoflux --mcp
 内容/markdown、快照、执行 JS 等)、**电脑**工具(截图、鼠标、键盘等),以及一个
 **`agent_chat`** 工具。
 
+## CLI/智能体类提供商的工具权限
+
+某些 CLI/智能体类提供商(尤其是 [Antigravity](/zh/docs/configuration/providers))
+无法自行向你请求权限。对这些提供商,NevoFlux 会在**服务端**对该智能体发起的每一次工具
+调用强制施加其常规[权限提示](/zh/docs/features#权限人类在环),因此你的"执行前确认"设置
+依然生效。只读工具(例如列出浏览器标签页)会直接放行、不弹出提示。
+
 > 智能体二进制已内置于浏览器安装包中;你也可以从
 > [智能体仓库](https://github.com/nevoflux-browser/nevoflux-agent)自行构建以独立使用。

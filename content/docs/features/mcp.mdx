@@ -40,5 +40,14 @@ In this mode NevoFlux exposes its **browser** tools (navigate, click, type, fill
 screenshot, read content/markdown, snapshot, eval JS, …), its **computer** tools
 (screenshot, mouse, keyboard, …), and an **`agent_chat`** tool.
 
+## Tool permissions for CLI/agent providers
+
+Some CLI/agent providers (notably [Antigravity](/en/docs/configuration/providers))
+can't ask you for permission themselves. For those, NevoFlux enforces its normal
+[permission prompts](/en/docs/features#permissions-human-in-the-loop) **server-side**
+on every tool call the agent makes, so your Confirm-before-actions setting still
+applies. Read-only tools (for example listing browser tabs) pass through without a
+prompt.
+
 > The agent binary is bundled inside the browser install; you can also build it from
 > the [agent repo](https://github.com/nevoflux-browser/nevoflux-agent) for standalone use.

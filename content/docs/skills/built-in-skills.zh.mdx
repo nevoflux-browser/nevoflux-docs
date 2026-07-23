@@ -67,10 +67,27 @@ NevoFlux 随附以下技能。用 `/<名称>` 调用其中任何一个。
 
 ### loop
 按周期性的时间/事件触发,重新运行一个提示(或被包裹的技能)。每次迭代从头开始;少量
-状态保存在便笺(scratchpad)中。
+状态保存在便笺(scratchpad)中。循环还能进行门控(gate)、校验(verify),乃至提出对
+自身的改进建议 —— 见[自动化](/zh/docs/features/automation#循环周期性任务)。
 
 ```text
 /loop 5m 检查这个页面是否有新评论
+```
+
+### schedule
+按日历计划将任务作为后台作业运行 —— cron 节奏(最小 1 小时)或一次性时间。见
+[定时任务](/zh/docs/features/scheduling)。
+
+```text
+/schedule 每个工作日早上 9 点,汇总我未读的新闻邮件
+```
+
+### goal
+为当前会话设定一个完成条件;智能体会在每轮结束后重新评估,直到目标达成或用尽轮数
+预算。见[会话目标](/zh/docs/features/scheduling#会话目标goal)。
+
+```text
+/goal 持续修复,直到 `cargo test` 退出码为 0
 ```
 
 ### skill-creator
