@@ -73,10 +73,29 @@ motion graphics, and social formats (e.g. 9:16).
 
 ### loop
 Re-run a prompt (or a wrapped skill) on a recurring time/event trigger. Each
-iteration starts fresh; small state persists in a scratchpad.
+iteration starts fresh; small state persists in a scratchpad. Loops can also gate,
+verify, and even propose improvements to themselves — see
+[Automation](/en/docs/features/automation#loops-recurring-tasks).
 
 ```text
 /loop 5m check this page for new comments
+```
+
+### schedule
+Run a task on a calendar schedule — a cron cadence (minimum 1 hour) or a one-off
+time — as a background job. See [Scheduled tasks](/en/docs/features/scheduling).
+
+```text
+/schedule every weekday at 9am, summarize my unread newsletters
+```
+
+### goal
+Give the agent a completion condition for the current session; it re-evaluates after
+every turn until the goal is met or its turn budget runs out. See
+[Goals](/en/docs/features/scheduling#session-goals-goal).
+
+```text
+/goal keep fixing until `cargo test` exits 0
 ```
 
 ### skill-creator

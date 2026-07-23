@@ -34,3 +34,21 @@ description: 侧边栏行为、智能体执行模式、数据路径,以及智能
 
 > 这些文件还参与 NevoFlux 的[自学习](/zh/docs/features/automation)系统,随时间推移
 > 它可能会提议对其进行更新。
+
+## 每个 Space 的人设(Space Souls)
+
+v0.3.12 新增:你可以在 **Space Souls** 设置中,为**每个浏览器 Space 单独指定助手人设**
+—— 一个 Space 用 "research" 灵魂,另一个用 "engineer" 灵魂。一个灵魂、它的私有记忆,以及
+该 Space 的 cookie 隔离都共用同一个键。
+
+绑定保存在配置目录下的 `space_souls.toml` 中,把 Space 的容器 id 映射到某个灵魂(角色)
+slug:
+
+```toml
+# ~/.config/nevoflux/space_souls.toml
+[bindings]
+"firefox-container-1" = "research"
+"firefox-container-2" = "engineer"
+```
+
+若某个 Space 未绑定(或该文件不存在),助手的行为与上面单一的全局人设完全一致。

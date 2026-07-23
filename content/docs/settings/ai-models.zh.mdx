@@ -12,7 +12,12 @@ description: 配置 LLM 提供商 —— 密钥、模型、Base URL,以及当前
 
 - **LLM Providers** —— 云端 API(Anthropic、OpenAI、DeepSeek、Qwen、Gemini、Groq、
   OpenRouter、Mistral、xAI/Grok、Cohere、Perplexity、Together)和 **local**(Ollama)。
-- **Agents** —— 命令行/智能体类提供商(Claude Code、Gemini CLI、Kimi Agent、OpenClaw)。
+- **Agents** —— 命令行/智能体类提供商(Claude Code、Antigravity、Kimi Agent、OpenClaw)。
+
+> v0.3.12 起,**Antigravity** 取代了 **Gemini CLI** 磁贴。它免密钥,但需要 `agy` 与
+> `antigravity-acp` 两个 CLI 位于 `PATH` 中 —— 见
+> [提供商与 API 密钥](/zh/docs/configuration/providers)。若在 `config.toml` 中直接配置,
+> `gemini-cli` 提供商仍可使用。
 
 当前提供商的卡片会显示 **Active** 徽标;已配置的卡片会显示对勾。
 

@@ -25,15 +25,26 @@ NevoFlux supports many LLM providers. Select one in
 | Perplexity | `perplexity` | `llama-3.1-sonar-small-128k-online` | `PERPLEXITY_API_KEY` |
 | Together | `together` | `meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo` | `TOGETHER_API_KEY` |
 | Claude Code (CLI) | `claude-code` | `sonnet` | `ANTHROPIC_API_KEY` |
+| Antigravity | `antigravity` (alias `antigravity-cli`) | `default` | — (keyless) |
 | Gemini CLI | `gemini-cli` | `gemini-2.5-pro` | `GEMINI_API_KEY` |
 | Kimi Agent | `kimi-agent` (alias `kimi`) | `kimi-latest` | `MOONSHOT_API_KEY` |
 | OpenClaw | `openclaw` | `default` | `OPENCLAW_API_KEY` |
 
 > **Provider types.** The AI Models tab groups these as **service** (cloud APIs),
-> **local** (Ollama), **CLI** (`claude-code`, `gemini-cli`, `kimi-agent` — these run
+> **local** (Ollama), **CLI** (`claude-code`, `antigravity`, `kimi-agent` — these run
 > a local command-line agent and manage their own auth), and **agent**
 > (`openclaw`). CLI/agent providers stream their output; a couple of providers
 > (notably **Ollama**) do not support streaming.
+
+> **Antigravity (new in v0.3.12).** This provider drives Google's `agy` CLI through
+> the community [`antigravity-acp`](https://github.com/shubzkothekar/antigravity-acp)
+> adapter. It is **keyless** — leave the API key blank; the `GEMINI_API_KEY` entry
+> is only a placeholder. Before selecting it, install both command-line tools and
+> put them on your `PATH`: the `agy` CLI itself, and the `antigravity-acp` adapter
+> binary (download it from the adapter's releases and rename it to `antigravity-acp`,
+> or `antigravity-acp.exe` on Windows). Leave the model as `default` to use agy's own
+> default. Antigravity replaces the old **Gemini CLI** tile in the AI Models tab; the
+> `gemini-cli` provider still works if you set it in `config.toml` by hand.
 
 ## Supplying API keys
 

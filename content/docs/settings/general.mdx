@@ -37,3 +37,22 @@ Settings** — the agent will tailor answers to you. Set a name and personality 
 
 > These files also participate in NevoFlux's [self-learning](/en/docs/features/automation)
 > system, which can propose updates to them over time.
+
+## Per-Space personas (Space Souls)
+
+New in v0.3.12, you can give **each browser Space its own assistant persona** — a
+"research" soul in one Space, an "engineer" soul in another — from the **Space Souls**
+settings. A soul, its private memory, and that Space's cookie jar all share one key.
+
+Bindings are stored in `space_souls.toml` in your config directory, mapping a Space's
+container id to a soul (role) slug:
+
+```toml
+# ~/.config/nevoflux/space_souls.toml
+[bindings]
+"firefox-container-1" = "research"
+"firefox-container-2" = "engineer"
+```
+
+If a Space isn't bound (or the file is absent), the assistant behaves exactly as it
+does with the single global persona above.

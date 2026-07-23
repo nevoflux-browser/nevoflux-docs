@@ -8,11 +8,35 @@ across sessions.
 
 ## Loops (recurring tasks)
 
-The agent can run a prompt (or a skill) on a recurring schedule with the **loop**
-tools — create a loop, list active loops, cancel one, and persist small state in a
-per-loop scratchpad. See the [`loop` skill](/en/docs/skills/built-in-skills#loop).
+The agent can re-run a prompt (or a wrapped skill) on a recurring trigger with the
+**loop** tools — create a loop, list active loops, cancel one, and persist small
+state in a per-loop scratchpad. Each iteration starts fresh. See the
+[`loop` skill](/en/docs/skills/built-in-skills#loop).
 
 *Example:* "every 30 minutes, check this page and notify me if the price drops."
+
+**Triggers** aren't only time-based. A loop's trigger can be `time:<5m|1h|…>`,
+`time:dynamic`, an `event:<topic>`, or page `state:` change (e.g. a selector on the
+current tab), combined with AND/OR. Its `mode` (`chat` / `browser` / `agent`) picks
+the tool catalog each iteration gets.
+
+Two options make loops cheaper and self-checking (both new in v0.3.11):
+
+- **`gate`** — a deterministic pre-check that runs *before* the agent each fire and
+  skips the run entirely (no model cost) when nothing changed. An `http` gate GETs a
+  URL and diffs an extracted value; a `bash` gate diffs a command's stdout; an
+  `event` gate filters the trigger's payload.
+- **`verify`** — a check over each iteration's tool results that records pass/fail on
+  the run. It reuses the [`/goal` check](/en/docs/features/scheduling#session-goals-goal)
+  semantics (`matches` substring or `/regex/`, optional `tool` scoping, `negate`).
+
+**Self-improving loops.** A loop can propose improvements to itself based on its
+recent runs (`loop_evolve`); you then **accept or reject** the proposal
+(`loop_proposal_respond`) before anything changes.
+
+> **Loops vs. schedules.** Loops are for fast, event-driven repetition (down to
+> minutes). For calendar-style jobs at an hourly-or-slower cadence, use
+> [Scheduled tasks](/en/docs/features/scheduling).
 
 ## Memory & self-learning
 
