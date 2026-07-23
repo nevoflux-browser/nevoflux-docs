@@ -1,0 +1,35 @@
+---
+title: Space Souls
+description: 为每个浏览器 Space 配备独立的助手 —— 各自的人设、私有记忆与 cookie 隔离。
+---
+
+NevoFlux 的浏览器把你的标签页组织成一个个 **Space**。借助 **Space Souls**,每个 Space
+都能拥有自己的助手"灵魂" —— 不同的人设、独立的私有记忆,以及独立的 cookie 隔离 ——
+于是工作 Space、个人 Space、研究 Space 各自获得一个贴合该场景的助手。
+
+## 什么是"灵魂"
+
+一个灵魂就是智能体的**人设** —— 与你在
+[设置 → General](/zh/docs/settings/general#人设灵魂文件) 中塑造的 Identity / Soul /
+User / Tools 是同一套。Space Souls 让你为每个 Space 指定*不同*的人设,而不是只用一个
+全局人设。
+
+## 每个 Space 隔离了什么
+
+一个灵魂、它的**私有记忆**,以及该 Space 的 **cookie 隔离**都共用同一个键(该 Space 的
+容器)。因此切换 Space 会同时切换助手、它记住的内容,以及它使用的登录态 —— 彼此干净
+隔离,互不串扰。
+
+## 如何设置
+
+绑定保存在 `space_souls.toml` 文件中,把每个 Space 映射到一个灵魂。绑定格式与 Space
+Souls 设置见
+[设置 → General → 每个 Space 的人设](/zh/docs/settings/general#每个-space-的人设space-souls)。
+未绑定的 Space 会像以前一样直接使用你单一的全局人设。
+
+## 为什么用它
+
+*示例:* 一个 **研究** Space,其灵魂了解你的研究背景并保有自己的笔记;一个 **工作**
+Space,拥有专业人设和与个人浏览完全分离的登录态。
+
+另见[长期记忆](/zh/docs/features/memory)。
