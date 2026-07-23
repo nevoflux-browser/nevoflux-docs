@@ -1,0 +1,39 @@
+---
+title: Long-term memory
+description: How the agent remembers across sessions — quick notes, a searchable knowledge base, and self-learning.
+---
+
+The agent doesn't start from scratch every conversation. It has a few
+complementary ways to carry knowledge from one session to the next.
+
+## Quick memory notes
+
+The agent has **memory tools** to store, search, update, and delete short notes it
+should remember — a fact, a preference, ongoing context. These persist between
+sessions and let it recall things you told it earlier without you repeating
+yourself.
+
+*Example:* "remember that I prefer metric units" — it saves a note and applies it
+next time.
+
+## Knowledge base (GBrain)
+
+For a full, browsable **"second brain"** — pages, dated timelines, and cited recall
+across everything you've captured — NevoFlux uses **GBrain**, a local, private
+knowledge base stored on your machine. The agent captures into it and recalls from it
+with the brain skills.
+
+GBrain is off until you enable it in
+[Settings → Knowledge Base](/en/docs/settings/knowledge-base). For the full picture —
+how it works, where your data lives, and the capture/recall/synthesize skills — see
+the **[Knowledge Base](/en/docs/knowledge-base)** section.
+
+## Self-learning
+
+A **self-learning** pipeline observes your sessions and, over time, proposes durable
+updates to the agent's persona ("soul") files — but only after enough confirming
+evidence. You stay in control of those files in
+[Settings → General](/en/docs/settings/general).
+
+> Personas — and their private memory — can also differ **per browser Space**. See
+> [Space Souls](/en/docs/features/space-souls).
