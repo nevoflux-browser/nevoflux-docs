@@ -1,23 +1,40 @@
 ---
 title: Docker 镜像
-description: 构建 nevoflux/agent 镜像、构建参数、运行模式、镜像环境变量，以及实时观看（VNC/noVNC）。
+description: 拉取或构建 nevoflux/agent 镜像——构建参数、运行模式、镜像环境变量，以及实时观看（VNC/noVNC）。
 ---
 
-`nevoflux/agent` 镜像由 agent 仓库的 `deploy/headless/` 目录构建。它会**从 GitHub
-下载官方预编译发行版**——**无需本地编译**。
+## 拉取官方镜像
 
-## 构建
+自 **v0.3.13** 起，每次发布都会把 `nevoflux/agent` 推送到 Docker Hub，并同时构建
+**amd64 与 arm64**，因此 Apple Silicon 或 Graviton 宿主拉到的是原生镜像：
 
 ```bash
-docker build -t nevoflux/agent:latest deploy/headless      # amd64 或 arm64
+docker pull nevoflux/agent:0.3.13     # 指定某个发行版
+docker pull nevoflux/agent:latest     # 最新已发布的版本
+```
+
+每个已发布的标签都把一个 browser 发行版与随其一同发布的 agent 二进制配成一对，并且
+只在该发行版**正式公开之后**才推送——因此只要标签存在，就一定对应一个你能下载到的
+发行版。
+
+> **生产环境请固定版本。** 下次发布时 `latest` 会在你脚下发生变化，而 `0.3.13` 不会。
+
+## 自行构建
+
+只有在需要定制构建时才用得上——额外内置 pack、指定 agent/browser 的配对，或使用未发布的
+二进制。镜像由 agent 仓库的 `deploy/headless/` 目录构建，会**从 GitHub 下载官方预编译
+发行版**——**无需本地编译**：
+
+```bash
+docker build -t nevoflux/agent:custom deploy/headless      # amd64 或 arm64
 ```
 
 ### 构建参数
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `AGENT_VERSION` | `latest` | agent 发行版标签——**带**前导 `v`（如 `v0.3.10`）。 |
-| `BROWSER_VERSION` | `latest` | browser 发行版标签——**不带**前导 `v`（如 `0.3.10`）。 |
+| `AGENT_VERSION` | `latest` | agent 发行版标签——**带**前导 `v`（如 `v0.3.13`）。 |
+| `BROWSER_VERSION` | `latest` | browser 发行版标签——**不带**前导 `v`（如 `0.3.13`）。 |
 | `TARGETARCH` | 宿主架构 | `amd64` → `x86_64` 资产，`arm64` → `aarch64`。由 `docker buildx --platform` 设定。 |
 | `PACK_REPOS` | 空 | 空格分隔、要打包内置的 pack（见[内置 packs](#内置-packs)）。 |
 | `INSTALL_GBRAIN` | `1` | 安装并启用 GBrain 知识库（设为 `0` 则完全跳过）。 |
@@ -28,8 +45,8 @@ docker build -t nevoflux/agent:latest deploy/headless      # amd64 或 arm64
 > **不可复现**。请同时固定两者：
 >
 > ```bash
-> docker build -t nevoflux/agent:v0.3.10 \
->   --build-arg AGENT_VERSION=v0.3.10 --build-arg BROWSER_VERSION=0.3.10 \
+> docker build -t nevoflux/agent:0.3.13-custom \
+>   --build-arg AGENT_VERSION=v0.3.13 --build-arg BROWSER_VERSION=0.3.13 \
 >   deploy/headless
 > ```
 

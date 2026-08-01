@@ -11,20 +11,21 @@ HTTP **任务 API**。你提交一条自然语言任务，agent 便会驱动真�
 > **“无头”指的是*部署*模式，而非功能缩水。** 无头任务能完成桌面会话所能做的一切——
 > 浏览网页、使用工具、运行技能、读写知识库。唯一的区别是没有可见窗口。
 
-本章节为 **nevoflux-agent v0.3.10** 新增内容，包括：
+本章节自 **nevoflux-agent v0.3.10** 起提供。自 **v0.3.13** 起，镜像会在每次发布时
+**推送到 Docker Hub**，因此你不再需要自行构建。本章包括：
 
-- **[Docker 镜像](/zh/docs/deployment/docker)** —— 如何构建、构建参数、运行模式以及实时观看（VNC）。
+- **[Docker 镜像](/zh/docs/deployment/docker)** —— 如何拉取或构建、构建参数、运行模式以及实时观看（VNC）。
 - **[Docker Compose](/zh/docs/deployment/docker-compose)** —— 随发行版附带的 `docker-compose.yml`，逐项讲解。
 - **[任务 API 与接口](/zh/docs/deployment/task-api)** —— HTTP 任务 API、OpenAI / MCP / ACP 前端、会话模式、固定脚本模式，以及完整的环境变量 / 命令行标志参考。
 
 ## 快速开始
 
 ```bash
-# 1. 构建镜像（从 GitHub 下载预编译发行版——无需本地编译）
-docker build -t nevoflux/agent:latest deploy/headless
+# 1. 拉取官方镜像（amd64 + arm64；自 v0.3.13 起发布）
+docker pull nevoflux/agent:0.3.13          # 或 :latest
 
 # 2. 运行长驻服务（运行时需要你的服务商密钥）
-docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:latest
+docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:0.3.13
 
 # 3. 提交一个浏览器任务
 curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
@@ -33,6 +34,9 @@ curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
 curl -s localhost:8080/tasks/task-0
 # → {"id":"task-0","status":"succeeded","output":"The title is Example Domain.", ...}
 ```
+
+需要定制构建（额外的 pack、固定的 agent/browser 版本组合、未发布的二进制）？见
+[Docker 镜像 → 自行构建](/zh/docs/deployment/docker#自行构建)。
 
 更喜欢用 Compose？请看 **[Docker Compose](/zh/docs/deployment/docker-compose)** ——
 它将同样的运行方式连同所有加固参数一起预置好了。
@@ -56,7 +60,7 @@ curl -s localhost:8080/tasks/task-0
 
 | 模式 | 命令 | 适用于 |
 | --- | --- | --- |
-| **服务模式** | `--daemon --headless --http-addr 0.0.0.0:8080` | **可信任务。** 一个长驻守护进程随时间服务多个任务。这是 v0.3.10 中已验证、完整接通的路径。 |
+| **服务模式** | `--daemon --headless --http-addr 0.0.0.0:8080` | **可信任务。** 一个长驻守护进程随时间服务多个任务。这是已验证、完整接通的路径。 |
 | **一任务一容器** | 每个任务一个全新容器，用后即销毁 | **不可信任务。** 每个任务相互隔离，任务之间不留存任何状态。 |
 
 > **为何粒度很重要。** 由于 `bash` / `run_command` 在守护进程内执行，一个长驻容器若服务
@@ -71,11 +75,11 @@ curl -s localhost:8080/tasks/task-0
 进程内的防护（每任务工具白名单、文件沙箱、`SENSITIVE_PATHS`、域名校验）是纵深防御的
 **层**，而非边界。
 
-> **v0.3.10 中一次性路径的现状。** 随附的部署资产包含 `oneshot` Compose 服务与
-> `run --task …` 一次性形式，但该 CLI 子命令**尚未接入 v0.3.10 的 agent 二进制**——
-> 目前只有 `--daemon --headless` 服务模式生效。在其落地之前，可通过**为每个任务运行一个
-> 全新的服务容器**（启动、提交一个任务、销毁容器）来获得真正的按任务隔离，或对可信的
-> 顺序流程使用带 `end_session` 的[会话模式](/zh/docs/deployment/task-api#会话模式)。
+> **一次性路径的现状——截至 v0.3.13 仍未接通。** 随附的部署资产包含 `oneshot` Compose
+> 服务与 `run --task …` 一次性形式，但该 CLI 子命令**尚未接入 agent 二进制**（已对
+> v0.3.13 核实）——目前只有 `--daemon --headless` 服务模式生效。在其落地之前，可通过
+> **为每个任务运行一个全新的服务容器**（启动、提交一个任务、销毁容器）来获得真正的按任务
+> 隔离，或对可信的顺序流程使用带 `end_session` 的[会话模式](/zh/docs/deployment/task-api#会话模式)。
 > 详见 [Compose 页面](/zh/docs/deployment/docker-compose#oneshot-服务)。
 
 ## Kubernetes

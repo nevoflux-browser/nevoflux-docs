@@ -14,9 +14,14 @@ and call tools as needed. Past sessions are at `nevoflux://history`.
 ## Permissions (human-in-the-loop)
 
 By default the agent **asks before it acts**. When it wants to run a tool or a
-command you'll see a permission prompt to approve or deny. Switch to **Auto-execute**
-in [Settings → General](/en/docs/settings/general) to let it run without confirming each
-step.
+command you'll see a permission prompt to approve or deny.
+
+How much runs unattended is the **Agent execution** tier in
+[Settings → General](/en/docs/settings/general#agent-execution-tiers) — from
+**Read-only** (the default: browse freely, confirm every change) up to **Full
+auto** (no confirmations). When a session is shared over
+[remote control](/en/docs/features/remote-control), the permission prompt appears
+on the paired phone too, and can be answered from there.
 
 ## Plans and thinking
 
@@ -45,6 +50,7 @@ browse and a stronger one to write — without you re-opening settings.
   <Card title="Scheduled tasks & goals" href="/en/docs/features/scheduling" />
   <Card title="Long-term memory" href="/en/docs/features/memory" />
   <Card title="Space Souls" href="/en/docs/features/space-souls" />
+  <Card title="Remote control from your phone" href="/en/docs/features/remote-control" />
   <Card title="Skills" href="/en/docs/skills" />
   <Card title="Canvas apps" href="/en/docs/canvas" />
 </Cards>

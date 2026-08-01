@@ -20,9 +20,22 @@ OS keychain. Treat `config.toml` as a secret file and avoid committing it anywhe
 
 ## The agent asks before it acts
 
-By default the agent runs in **Confirm before actions** mode: it asks for your
-approval before running tools or commands. You can opt into **Auto-execute** in
-[Settings → General](/en/docs/settings/general) — do so deliberately.
+How much runs without a prompt is set by **Agent execution** in
+[Settings → General](/en/docs/settings/general#agent-execution-tiers). It defaults
+to **Read-only**: the agent browses, navigates and fetches freely, but anything
+that changes a site, a file or your machine waits for your approval. Three higher
+tiers — **Browser auto**, **Browser auto + reads**, **Full auto** — auto-approve
+progressively more. Raise it deliberately, and read **Full auto** as "any tool in
+this conversation may run without asking".
+
+Tools the classifier doesn't recognize are always treated as highest-risk, so a
+newly added or third-party tool is never auto-approved below **Full auto**.
+
+> **Upgrading from before v0.3.13:** the old **Auto-execute** option never took
+> effect, and resets to **Read-only** rather than becoming **Full auto**.
+
+The tier is also what a [remote-control](/en/docs/features/remote-control) session
+inherits — a paired phone can see the tier but cannot raise it.
 
 ## Tool and command safety
 

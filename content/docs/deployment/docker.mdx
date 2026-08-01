@@ -1,24 +1,43 @@
 ---
 title: Docker image
-description: Build the nevoflux/agent image, its build args, run modes, image environment, and the live-view (VNC/noVNC).
+description: Pull or build the nevoflux/agent image — build args, run modes, image environment, and the live-view (VNC/noVNC).
 ---
 
-The `nevoflux/agent` image is built from the agent repo's `deploy/headless/`
-directory. It **downloads the official prebuilt releases from GitHub** — there is
-**no local compilation**.
+## Pull the official image
 
-## Build
+Since **v0.3.13** every release publishes `nevoflux/agent` to Docker Hub, built
+for **amd64 and arm64**, so an Apple Silicon or Graviton host pulls a native
+image:
 
 ```bash
-docker build -t nevoflux/agent:latest deploy/headless      # amd64 or arm64
+docker pull nevoflux/agent:0.3.13     # a specific release
+docker pull nevoflux/agent:latest     # the newest published release
+```
+
+Each published tag pairs a browser release with the agent binary that shipped
+alongside it, and is only pushed **after** that release goes public — so a tag
+that exists always corresponds to a release you can download.
+
+> **Pin the version in production.** `latest` moves under you at the next
+> release; `0.3.13` does not.
+
+## Build it yourself
+
+You only need this for a custom build — extra bundled packs, a specific
+agent/browser pairing, or unreleased binaries. The image is built from the agent
+repo's `deploy/headless/` directory and **downloads the official prebuilt releases
+from GitHub** — there is **no local compilation**:
+
+```bash
+docker build -t nevoflux/agent:custom deploy/headless      # amd64 or arm64
 ```
 
 ### Build args
 
 | Arg | Default | Meaning |
 | --- | --- | --- |
-| `AGENT_VERSION` | `latest` | Agent release tag — **with** a leading `v` (e.g. `v0.3.10`). |
-| `BROWSER_VERSION` | `latest` | Browser release tag — **no** leading `v` (e.g. `0.3.10`). |
+| `AGENT_VERSION` | `latest` | Agent release tag — **with** a leading `v` (e.g. `v0.3.13`). |
+| `BROWSER_VERSION` | `latest` | Browser release tag — **no** leading `v` (e.g. `0.3.13`). |
 | `TARGETARCH` | host arch | `amd64` → `x86_64` assets, `arm64` → `aarch64`. Set by `docker buildx --platform`. |
 | `PACK_REPOS` | empty | Space-separated packs to bundle (see [Bundling packs](#bundling-packs)). |
 | `INSTALL_GBRAIN` | `1` | Install + enable the GBrain knowledge base (`0` to skip entirely). |
@@ -29,8 +48,8 @@ docker build -t nevoflux/agent:latest deploy/headless      # amd64 or arm64
 > browser and is **not reproducible**. Pin both:
 >
 > ```bash
-> docker build -t nevoflux/agent:v0.3.10 \
->   --build-arg AGENT_VERSION=v0.3.10 --build-arg BROWSER_VERSION=0.3.10 \
+> docker build -t nevoflux/agent:0.3.13-custom \
+>   --build-arg AGENT_VERSION=v0.3.13 --build-arg BROWSER_VERSION=0.3.13 \
 >   deploy/headless
 > ```
 

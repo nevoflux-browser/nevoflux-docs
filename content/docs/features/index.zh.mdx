@@ -14,8 +14,12 @@ description: 侧边栏智能体如何工作 —— 对话、权限、计划与�
 ## 权限(人类在环)
 
 默认情况下,智能体在**执行前会询问**。当它想运行工具或命令时,你会看到一个权限提示
-以批准或拒绝。在[设置 → General](/zh/docs/settings/general)中切换为 **Auto-execute**,
-可让它无需逐步确认地执行。
+以批准或拒绝。
+
+无需确认即可执行的范围,由[设置 → General](/zh/docs/settings/general#agent-execution-权限档位)
+中的 **Agent execution** 档位决定 —— 从 **Read-only**(默认:自由浏览,每次改动都确认)
+一直到 **Full auto**(不再确认)。当会话通过[远程控制](/zh/docs/features/remote-control)
+共享时,权限提示也会出现在配对的手机上,并可在手机上作答。
 
 ## 计划与思考
 
@@ -43,6 +47,7 @@ description: 侧边栏智能体如何工作 —— 对话、权限、计划与�
   <Card title="定时任务与目标" href="/zh/docs/features/scheduling" />
   <Card title="长期记忆(知识库)" href="/zh/docs/features/memory" />
   <Card title="Space Souls" href="/zh/docs/features/space-souls" />
+  <Card title="手机远程控制" href="/zh/docs/features/remote-control" />
   <Card title="技能" href="/zh/docs/skills" />
   <Card title="Canvas 应用" href="/zh/docs/canvas" />
 </Cards>

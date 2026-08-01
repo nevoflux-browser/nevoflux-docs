@@ -18,9 +18,20 @@ NevoFlux 以本地优先。你的**会话**、**知识库**(`~/.gbrain/`)、**�
 
 ## 智能体执行前会询问
 
-默认情况下,智能体处于 **Confirm before actions(操作前确认)**模式:运行工具或命令前
-会请求你的批准。你可以在[设置 → General](/zh/docs/settings/general)中选择
-**Auto-execute(自动执行)** —— 请谨慎开启。
+不询问就能执行多少,由[设置 → General](/zh/docs/settings/general#agent-execution-权限档位)
+中的 **Agent execution** 决定。默认是 **Read-only**:智能体可以自由浏览、导航和抓取,
+但任何会改变网站、文件或你机器的操作都要等你批准。更高的三档 —— **Browser auto**、
+**Browser auto + reads**、**Full auto** —— 逐级自动批准更多操作。请谨慎提高档位,并把
+**Full auto** 理解为"本对话中的任何工具都可以不经询问直接运行"。
+
+分类器无法识别的工具一律按最高风险处理,因此新增工具或第三方工具在 **Full auto**
+以下永远不会被自动批准。
+
+> **从 v0.3.13 之前升级:**旧的 **Auto-execute(自动执行)**选项从未真正生效,升级后
+> 会重置为 **Read-only**,而不是变成 **Full auto**。
+
+[远程控制](/zh/docs/features/remote-control)会话继承的也是这个档位 —— 配对的手机能看到
+档位,但无法提高它。
 
 ## 工具与命令安全
 
