@@ -30,6 +30,13 @@ description: 周期性循环、网络工具与语音。
 **自我改进的循环。** 循环可基于其最近的运行提出对自身的改进建议(`loop_evolve`);随后
 由你在任何改动生效前**接受或拒绝**该建议(`loop_proposal_respond`)。
 
+> **循环的权限不能超过创建它的会话**(v0.3.13 新增)。由于每次迭代会自动批准自己的
+> 工具调用,`loop_create` 在创建时会对照你的
+> [Agent execution 档位](/zh/docs/settings/general#agent-execution-权限档位)校验:
+> `mode: browser` 至少需要 **Browser auto**;`mode: agent` —— 或任何 `bash` 门,因为它
+> 会按计划运行任意 shell —— 需要 **Full auto**。低于该档位的调用会被拒绝,而不是造出一个
+> 迭代时悄悄运行会话本身无权运行的工具的循环。`mode: chat` 是只读的,无需额外授权。
+
 > **循环 vs. 定时任务。** 循环用于快速、事件驱动的重复(可细到分钟)。对于按日历、
 > 以小时或更慢节奏运行的作业,请使用[定时任务](/zh/docs/features/scheduling)。
 

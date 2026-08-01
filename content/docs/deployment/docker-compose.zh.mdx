@@ -40,7 +40,7 @@ services:
       context: .
       dockerfile: Dockerfile
       # 镜像从 GitHub 发行版下载（无需本地编译）。固定版本：
-      #   args: { AGENT_VERSION: v0.3.10, BROWSER_VERSION: 0.3.10 }   # 默认：latest
+      #   args: { AGENT_VERSION: v0.3.13, BROWSER_VERSION: 0.3.13 }   # 默认：latest
       # 若要改从本地暂存产物构建，设置：dockerfile: Dockerfile.local
     image: nevoflux/agent:latest
     command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080"]
@@ -134,8 +134,8 @@ docker compose --profile oneshot run --rm oneshot \
       --profile base1 --policy browser-only --wall-clock 300s --token-budget 200k
 ```
 
-> **v0.3.10 注意事项。** `oneshot` 服务与 `run --task` 一次性形式随部署资产附带，但
-> `run` 子命令**尚未接入 v0.3.10 的 agent 二进制**——目前它会被忽略，只有
+> **注意事项——截至 v0.3.13 仍未接通。** `oneshot` 服务与 `run --task` 一次性形式随部署
+> 资产附带，但 `run` 子命令**尚未接入 agent 二进制**——目前它会被忽略，只有
 > `--daemon --headless` 服务模式生效。在其落地之前，请通过**为每个任务运行一个全新的
 > `headless` 容器**（启动、提交一个任务、销毁）来获得按任务隔离，或对可信的顺序流程使用
 > 带 `end_session` 的[会话模式](/zh/docs/deployment/task-api#会话模式)。

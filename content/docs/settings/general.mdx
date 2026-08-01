@@ -11,11 +11,45 @@ the agent's persona.
 | Setting | Options | What it does |
 | --- | --- | --- |
 | **Sidebar default** | Auto-open / Manual only | Whether the sidebar opens automatically |
-| **Agent execution** | Confirm before actions / Auto-execute | Whether the agent asks before each action |
+| **Agent execution** | four tiers (see below) | How much the agent may do without asking |
 | **Data storage** | path | Where artifact and session data are stored (e.g. `~/.config/nevoflux/`) |
 
-*Example:* switch **Agent execution** to **Auto-execute** to let the agent run
-multi-step tasks without confirming every action. These save instantly.
+These save instantly.
+
+## Agent execution tiers
+
+New in **v0.3.13**, **Agent execution** is a four-step ladder rather than a
+confirm/auto toggle. Each tier auto-approves everything the tier below it does,
+plus one more class of tool. Anything a tier does *not* cover still raises a
+[permission prompt](/en/docs/features#permissions-human-in-the-loop).
+
+| Tier | Adds | Still asks before |
+| --- | --- | --- |
+| **Read-only** *(default)* | Reading a page, navigating, waiting; web search + fetch; knowledge-base reads; thinking, planning, and telling you something | Everything else |
+| **Browser auto** | + browser interaction: click, type, fill, scroll, key presses | Local files, shell, everything else |
+| **Browser auto + reads** | + local file reads (`read_file`, `list_files`, `glob`, `grep`) | File writes, shell, everything else |
+| **Full auto** | Everything — no confirmations | Nothing |
+
+Two things that are easy to guess wrong:
+
+- **Navigation counts as read-only.** Opening a URL is in the bottom tier;
+  *interacting* with what loads is not.
+- **`browser_eval_js` is not a browser interaction.** Running JavaScript in a page
+  is in the top class with shell and file writes, so it needs **Full auto** — it
+  can do far more than a click.
+
+Tools the classifier doesn't recognize — including new, MCP and third-party ones —
+always fall into that same highest-risk class, so an unknown tool is never
+auto-approved below **Full auto**.
+
+> **Upgrading from before v0.3.13?** The old **Auto-execute** option was a stub
+> that never actually took effect. It is deliberately **not** migrated to **Full
+> auto** — it resets to **Read-only**, because silently granting full permissions
+> during an upgrade would be worse than asking you to re-pick. Check this setting
+> after updating.
+
+The tier also bounds what a session can *create*: see
+[loops and execution tiers](/en/docs/features/automation#loops-recurring-tasks).
 
 ## Persona ("soul") files
 

@@ -35,6 +35,15 @@ Two options make loops cheaper and self-checking (both new in v0.3.11):
 recent runs (`loop_evolve`); you then **accept or reject** the proposal
 (`loop_proposal_respond`) before anything changes.
 
+> **A loop can't out-rank the session that created it** (new in v0.3.13). Each
+> iteration auto-approves its own tool calls, so `loop_create` is checked against
+> your [Agent execution tier](/en/docs/settings/general#agent-execution-tiers) at
+> creation time: `mode: browser` needs at least **Browser auto**, and `mode: agent`
+> — or any `bash` gate, which runs arbitrary shell on a schedule — needs **Full
+> auto**. Below that the call is refused, rather than minting a loop whose
+> iterations quietly run tools the session itself may not. `mode: chat` is
+> read-only and needs no grant.
+
 > **Loops vs. schedules.** Loops are for fast, event-driven repetition (down to
 > minutes). For calendar-style jobs at an hourly-or-slower cadence, use
 > [Scheduled tasks](/en/docs/features/scheduling).

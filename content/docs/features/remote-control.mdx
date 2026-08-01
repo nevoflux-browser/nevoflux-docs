@@ -1,0 +1,100 @@
+---
+title: Remote control from your phone
+description: Pair a phone with a running NevoFlux session over an end-to-end encrypted channel, and drive the same conversation — tools, permissions and all — from anywhere. New in agent v0.3.13.
+---
+
+New in **v0.3.13**, you can hand a running sidebar session to your phone. The
+conversation, its browser, its tools and its permission prompts all stay on your
+computer — the phone is a remote head onto the session you already have open.
+
+> **It is the *same* session, not a second one.** The phone doesn't get its own
+> agent; it types into the conversation that is open in your sidebar, and sees
+> exactly what that conversation produces.
+
+## Pair a device
+
+Type the slash command in the sidebar:
+
+```text
+/remote-control
+```
+
+**If you aren't signed in to nevoflux.app yet**, the agent starts a device sign-in
+first: it prints a verification link and a short user code, you approve it in a
+browser, and it carries on by itself. It waits up to 30 minutes for you.
+
+**Once signed in**, it replies with a connect link and a pairing code:
+
+```text
+✅ Remote control is open.
+
+On the other device, open this link and sign in to the same account:
+https://portal.nevoflux.app/connect/<channel-id>
+
+Then enter the pairing code:
+  <pairing code>
+```
+
+Open the link on your phone, sign in to the same account, and enter the code. The
+phone is now attached to that conversation.
+
+> **Keep the session open.** Closing the window ends the remote channel — the
+> desktop session is the thing being controlled, so there is nothing left to drive
+> once it's gone.
+
+## What the phone can do
+
+| From the phone | Notes |
+| --- | --- |
+| **Send a turn** | Goes into the same conversation, with your local tab context attached |
+| **Watch it work** | Streamed replies, thinking, tool calls, and artifacts as they happen |
+| **Stop generation** | The portal's stop button maps onto the local stop |
+| **Answer a permission prompt** | Tool approvals surface on the phone and can be approved or denied there |
+| **Review a plan** | Plan proposals arrive for approval like they do locally |
+| **Pick a tab** (`#`) | Choose which open tab the turn is about |
+| **Mention a soul** (`@`) | Route the turn to a specific [Space Soul](/en/docs/features/space-souls) |
+| **Invoke a skill** (`/`) | The portal composer lists your installed [skills](/en/docs/skills) |
+| **Receive notifications** | Anything the agent would notify you about locally is forwarded |
+
+To fill the `/`, `@` and `#` menus, the portal may ask the daemon for exactly
+three things — the skill list, the soul list, and the open-tab list. That is an
+**allow-list, not a filter**: no other command reaches the daemon over this
+channel, so a portal cannot install a pack, write config, or touch the knowledge
+base.
+
+## What the phone cannot do
+
+**It cannot raise the session's permissions.** The chat mode and the
+[Agent execution tier](/en/docs/settings/general#agent-execution-tiers) are
+snapshotted from your sidebar when `/remote-control` runs, and the remote turns
+inherit them verbatim. The portal *displays* both so you know what a turn would
+actually be allowed to do, and can change neither. The channel never grants more
+than the session already had.
+
+So if you plan to be away from the machine, pick the tier **before** you pair.
+
+## Security model
+
+- **End-to-end encrypted.** The pairing code and the channel id derive a 256-bit
+  key via **Argon2id**; frames are sealed with **AES-256-GCM**. The relay only
+  ever sees ciphertext — it cannot read, forge, or tamper with a frame, and a
+  forged one fails authentication and is dropped.
+- **The pairing code is the secret.** The channel id is unguessable but not
+  confidential — someone who has it can attach and receive ciphertext they cannot
+  read. Someone who has the **code** drives your session. Treat it like a
+  password, and don't paste it anywhere but the portal.
+- **Scoped to one session.** Downlink traffic is filtered by session, so a paired
+  portal sees its own conversation's events and no one else's.
+- **Nothing is published.** The daemon dials out to the relay; it opens no
+  inbound port, so there is no listener on your machine to expose or firewall.
+
+`NEVOFLUX_RELAY_URL` overrides the relay endpoint (default
+`wss://relay.nevoflux.app`) if you run your own.
+
+## Headless containers
+
+Driving a **container** from a phone — `--remote-control` with no HTTP interface
+at all, plus a `remote` service in the shipped Compose file — exists in the agent
+repository but is **not part of v0.3.13**. It will be documented under
+[Headless (Docker)](/en/docs/deployment) once it ships in a release. What this
+page describes is remote control of a **desktop** session.

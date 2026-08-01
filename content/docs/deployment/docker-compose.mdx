@@ -41,7 +41,7 @@ services:
       context: .
       dockerfile: Dockerfile
       # Image is DOWNLOADED from GitHub releases (no local compile). Pin versions:
-      #   args: { AGENT_VERSION: v0.3.10, BROWSER_VERSION: 0.3.10 }   # default: latest
+      #   args: { AGENT_VERSION: v0.3.13, BROWSER_VERSION: 0.3.13 }   # default: latest
       # To build from locally-staged artifacts instead, set: dockerfile: Dockerfile.local
     image: nevoflux/agent:latest
     command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080"]
@@ -137,13 +137,13 @@ docker compose --profile oneshot run --rm oneshot \
       --profile base1 --policy browser-only --wall-clock 300s --token-budget 200k
 ```
 
-> **v0.3.10 caveat.** The `oneshot` service and the `run --task` one-shot form ship
-> in the deploy assets, but the `run` subcommand is **not yet wired into the
-> v0.3.10 agent binary** — it is currently ignored, and only `--daemon --headless`
-> service mode is active. Until it lands, get per-task isolation by running a
-> **fresh `headless` container per task** (bring it up, submit one task, tear it
-> down), or use [session mode](/en/docs/deployment/task-api#session-mode) with
-> `end_session` for trusted sequential flows.
+> **Caveat — still open as of v0.3.13.** The `oneshot` service and the `run --task`
+> one-shot form ship in the deploy assets, but the `run` subcommand is **not wired
+> into the agent binary yet** — it is currently ignored, and only `--daemon
+> --headless` service mode is active. Until it lands, get per-task isolation by
+> running a **fresh `headless` container per task** (bring it up, submit one task,
+> tear it down), or use [session mode](/en/docs/deployment/task-api#session-mode)
+> with `end_session` for trusted sequential flows.
 
 ## What to change for your setup
 
