@@ -36,6 +36,16 @@ description: 周期性循环、网络工具与语音。
 > `mode: browser` 至少需要 **Browser auto**;`mode: agent` —— 或任何 `bash` 门,因为它
 > 会按计划运行任意 shell —— 需要 **Full auto**。低于该档位的调用会被拒绝,而不是造出一个
 > 迭代时悄悄运行会话本身无权运行的工具的循环。`mode: chat` 是只读的,无需额外授权。
+>
+> 自 v0.3.16 起,迭代的工具列表在工具实际运行时也会强制执行,而不只是在告诉模型它有哪些
+> 工具时生效:调用一个本次迭代没有提供的工具 —— 无论是从之前的轮次记住的,还是猜出来的
+> —— 都会被拒绝。会对某次调用*询问*的
+> [pack 站点规则](/zh/docs/packs/development#站点规则--componentstool_policy)在循环中会
+> 直接拒绝,因为没有人可以询问。[定时任务](/zh/docs/features/scheduling#定时任务schedule)
+> 更严格:创建一个需要 **Full auto**。
+
+> **正在使用端侧模型?** 使用[端侧模型](/zh/docs/configuration/local-models#本地模式下有哪些变化)
+> 期间,循环会**跳过**每次触发(记录原因为 `local_mode`),而不是在很小的本地上下文中运行。
 
 > **循环 vs. 定时任务。** 循环用于快速、事件驱动的重复(可细到分钟)。对于按日历、
 > 以小时或更慢节奏运行的作业,请使用[定时任务](/zh/docs/features/scheduling)。
@@ -47,7 +57,4 @@ description: 周期性循环、网络工具与语音。
 
 ## 语音(TTS / STT)
 
-NevoFlux 内置语音合成与转写:
-
-- **ElevenLabs**(云端 TTS)、**Kokoro**(本地 TTS)和 **Whisper**(语音转文字)。
-  在 [`config.toml`](/zh/docs/configuration) 的 `[tts.*]` 节中配置语音/密钥。
+语音输入与语音回复有单独的页面介绍:见[语音](/zh/docs/features/voice)。

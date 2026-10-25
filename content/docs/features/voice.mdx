@@ -1,0 +1,122 @@
+---
+title: Voice
+description: Talk to the agent and hear it answer — on-device speech recognition and synthesis, which engines run, and what leaves your machine.
+---
+
+New in **v0.3.15**, you can speak to the agent from the sidebar and, if you want,
+have its replies read back to you. Speech recognition and speech synthesis both run
+**on this machine**; no audio is sent to a speech service.
+
+## Get started
+
+1. Open [Settings → General](/en/docs/settings/general#speech-models-and-voice) and,
+   under **Speech Models**, download **Speech input**. That alone is enough for
+   dictation.
+2. If you want spoken answers, also download a voice: **Spoken replies** (English),
+   **Chinese replies** (Chinese and English), or **Natural voice** (20 languages,
+   large). Then switch on **Speak replies** under **Voice**.
+3. In the sidebar, click the **microphone button** next to the message box and talk.
+   What you say becomes an ordinary message in the current conversation — same
+   history, same tools, same execution tier.
+
+The browser asks for microphone permission the first time. Click the button again (or
+the ✕ on the voice bar) to stop; voice input also stops by itself after a stretch of
+silence.
+
+**Interrupting.** Start talking while a reply is being read out and it stops speaking,
+so you can redirect it without waiting.
+
+**Voice view** (off by default) replaces the message bubbles with a waveform while
+voice is on. The replies are still generated, stored and searchable — only the display
+changes.
+
+## Speech input
+
+Two recognition engines are routed by language:
+
+| Engine | Languages | Notes |
+| --- | --- | --- |
+| **SenseVoice** *(default)* | Chinese (Mandarin), Cantonese, English, Japanese, Korean | Fast enough for live dictation; downloaded by **Speech input** |
+| **Whisper** (`base` by default) | Other languages | Used only for languages SenseVoice cannot handle |
+
+Whisper is built in, but its weights are **not** part of the Speech Models downloader.
+To use it, put a Hugging Face–format Whisper model (`config.json`, `tokenizer.json`,
+`model.safetensors` — not whisper.cpp's `ggml-*.bin`) in
+`<cache>/nevoflux/models/whisper-base/`, or point `[tts.whisper] model_path` at it.
+Larger sizes are noticeably better outside English but cost memory: roughly 585 MB
+resident for `base`, 1.9 GB for `small`, 4.8 GB for `large-v3-turbo` (model alone).
+
+The agent can also transcribe audio files you give it. Recordings longer than 30
+seconds are split at pauses in speech before transcribing.
+
+## Spoken replies
+
+Two synthesis engines, chosen automatically:
+
+- **MOSS-TTS-Nano** (**Natural voice**) — Chinese and 19 other languages, the better
+  voice. Used whenever it is installed *and* fast enough on this machine.
+- **Kokoro** — the fallback. The **Spoken replies** download is English-only; the
+  **Chinese replies** download is a newer Kokoro release that speaks Chinese and English.
+
+"Fast enough" is measured, not guessed: the agent times real replies and keeps a
+median of recent measurements. If MOSS takes more than 0.85× real time to speak, the
+reply would stall, so Kokoro takes over. The **Voice** group tells you which engine is
+speaking and why; **Re-measure** clears the verdict so the next reply tries MOSS again
+(useful after closing a heavy program or updating a driver). The **Voice** list only
+offers voices of the engine that will actually speak.
+
+Only the reply text is read: code blocks are skipped and Markdown marks are dropped.
+While replies are being spoken, the model is asked to write for the ear — lead with
+the conclusion in whole sentences and not let code, tables or lists carry the meaning.
+The answer still appears in full as text.
+
+**GPU.** With **Use GPU when it helps** on (the default), speech synthesis may try a
+GPU — **DirectML** on Windows (any DX12 GPU: NVIDIA, AMD or Intel), **Core ML** on
+macOS — and keeps it only if it measures faster than the CPU here; it often is not.
+On Linux speech always runs on the CPU. If a GPU backend crashes or fails, the agent
+records it in `[speech] failed_providers` and does not try it again; delete the entry
+to retry (for example after a driver update). Turn the switch off to pin the CPU.
+
+## Privacy
+
+- **Audio stays on this machine.** Recognition and synthesis run locally; the speech
+  models are only downloaded, never called.
+- **The transcript is a normal message.** Once recognized, what you said is sent to
+  your active model provider exactly as typed text would be.
+- **Downloads** come from `hf-mirror.com` / Hugging Face and GitHub (some via the
+  `ghfast.top` proxy). Every file is checked against a pinned size and SHA-256
+  digest, so a changed or substituted file is refused. Models are kept in
+  `<cache>/nevoflux/models/` — `~/.cache/` on Linux, `~/Library/Caches/` on macOS,
+  `%LOCALAPPDATA%` on Windows.
+- **ElevenLabs** is separate: a cloud text-to-speech tool the agent can use only if you
+  configure an ElevenLabs API key under `[tts.elevenlabs]`. Text sent to it leaves your
+  machine.
+
+## Configuration
+
+Speech preferences (**Speak replies**, **Voice**, GPU, **Voice view**) are browser
+settings. The engines are configured in [`config.toml`](/en/docs/configuration); all
+fields are optional and the defaults look in the models folder above.
+
+```toml
+[tts.sensevoice]
+# model_path  = "~/.cache/nevoflux/models/sensevoice-small.int8.onnx"
+# tokens_path = "~/.cache/nevoflux/models/sensevoice-tokens.txt"
+
+[tts.whisper]
+default_size = "base"      # tiny | base | small | medium | large-v3-turbo
+# model_path = "/path/to/whisper-small"   # directory in Hugging Face layout
+
+[tts.kokoro]
+# default_voice = "af_heart"
+
+[tts.moss]
+# enabled = false          # keep Kokoro even when MOSS is installed
+# default_voice = "Junhao"
+
+[speech]
+# Written by the agent — edit only to troubleshoot.
+# execution_provider = "cpu"   # auto (default) | cpu | directml | cuda | coreml
+# rtf_budget = 0.85            # above this, MOSS is too slow and Kokoro speaks
+# failed_providers = []        # backends that failed here; clear to retry
+```

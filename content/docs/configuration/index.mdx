@@ -18,6 +18,12 @@ writes to it for you.
 The file is created with defaults the first time the agent runs. Every field is
 optional — anything you omit uses its default.
 
+**`NEVOFLUX_CONFIG`** (new in v0.3.16): if this environment variable is set to a
+non-empty path, the agent reads and writes that file instead of the default location.
+Use it to run a second agent with its own provider and settings without touching your
+normal `config.toml`. Some other files (such as packs) are then resolved relative to
+that file's directory, so keep the override in a folder of its own.
+
 > **Hand edits require a restart.** Changes you make through the Settings UI are
 > applied live. If you edit `config.toml` by hand, restart NevoFlux so the agent
 > reloads it.
@@ -33,6 +39,8 @@ optional — anything you omit uses its default.
 | --- | --- |
 | `[llm]` | Active provider and shared generation settings |
 | `[llm.<provider>]` | Per-provider key, model, base URL |
+| `[llm.custom.<id>]` | Your own providers ([details](/en/docs/configuration/providers#custom-providers)) |
+| `[llm.local]` | On-device model engine ([details](/en/docs/configuration/local-models)) |
 | `[daemon]` | Background process: ports, timeouts, concurrency |
 | `[daemon.session]` | Session limits and cleanup |
 | `[daemon.context]` | Context window, history, compression |
@@ -43,7 +51,10 @@ optional — anything you omit uses its default.
 | `[learning]` | Self-learning pipeline |
 | `[embedding]` | Embedding model for search |
 | `[knowledge_base]` / `[knowledge_base.brain]` | GBrain knowledge base ([details](/en/docs/knowledge-base)) |
-| `[tts.*]` | Text-to-speech / transcription engines |
+| `[tts.*]` | Speech engines: `sensevoice`, `whisper`, `kokoro`, `moss`, `elevenlabs` ([details](/en/docs/features/voice#configuration)) |
+| `[speech]` | Machine measurements for spoken replies (mostly written by the agent) |
+| `[jev]` / `[jev.points]` | Optional Jev decision service, off by default ([details](/en/docs/configuration/jev)) |
+| `[remote_control]` | Headless remote-control service ([details](/en/docs/features/remote-control)) |
 
 ## Key fields
 
@@ -66,6 +77,20 @@ optional — anything you omit uses its default.
 | `base_url` | string | Override the API endpoint (proxies / compatible servers) |
 | `context_window` | int | Override the model's context size |
 | `use_streaming` | bool | Stream responses (default on; `ollama` is off) |
+
+### `[llm.custom.<id>]`
+
+A provider you added under **Custom Providers**. It takes the same fields as
+`[llm.<provider>]`, plus:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `display_name` | string | Name on the card; safe to change |
+| `wire` | `"openai"` or `"anthropic"` | Which API it speaks |
+| `accent` | string | Card colour, `#rrggbb` (optional) |
+
+Select it with `provider = "custom:<id>"`. See
+[Custom providers](/en/docs/configuration/providers#custom-providers).
 
 ## A complete example
 

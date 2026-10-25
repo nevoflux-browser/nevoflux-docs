@@ -1,0 +1,169 @@
+---
+title: Remote control (container)
+description: Run a headless NevoFlux container that you drive from a phone — --remote-control, the remote Compose service, its persistent data volume, account sign-in, and the fixed mode and execution tier.
+---
+
+Since **v0.3.14**, a container can be a **remote-control head**: one browser and
+one long conversation, driven from your phone through nevoflux.app, with no
+desktop anywhere. What the phone can do once connected is described on the
+[Remote control](/en/docs/features/remote-control) feature page; this page covers
+running the container.
+
+```bash
+nevoflux-agent --daemon --remote-control
+```
+
+Unlike every other headless mode, **`--remote-control` serves no HTTP at all**.
+The daemon dials out to the relay; there is no port to publish, guard or
+firewall. (It can be combined with `--headless` and the interface flags, but
+it needs neither.)
+
+## With Compose
+
+The shipped `docker-compose.yml` has a `remote` service, behind the `remote`
+profile so `docker compose up` does not start it:
+
+```bash
+# 1. give the container a nevoflux.app account token (see below)
+cp ~/.local/share/nevoflux/account-token ./account-token     # from a signed-in desktop
+
+# 2. start it
+docker compose --profile remote up remote
+
+# 3. read the connect block it printed and paste the whole thing into the
+#    portal on your phone — the portal picks out the link and the code
+docker compose --profile remote logs remote | head -40
+```
+
+The connect block looks like:
+
+```text
+NevoFlux remote control is open.
+
+On your phone, open this link and sign in to the same account:
+
+    https://portal.nevoflux.app/connect/<channel-id>
+
+Then enter the pairing code:
+
+    <pairing code>
+
+This head answers in `agent` mode with Agent execution `browser-auto`.
+Both are fixed at startup and cannot be changed from the phone.
+```
+
+The service, annotated:
+
+```yaml
+  remote:
+    profiles: ["remote"]
+    image: nevoflux/agent:latest
+    command: ["--daemon", "--remote-control"]
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY (or your provider's key)}"
+      NEVOFLUX_REMOTE_MODE: "agent"                  # chat | browser | agent
+      NEVOFLUX_REMOTE_EXECUTION_TIER: "browser-auto" # read-only | browser-auto |
+                                                     # browser-auto-local-read | full-auto
+      RUST_LOG: "info"
+      # NEVOFLUX_PORTAL_URL: "https://portal.nevoflux.app"
+      # NEVOFLUX_RELAY_URL:  "wss://relay.nevoflux.app"
+    volumes:
+      - remote-data:/var/nevoflux/data              # REQUIRED, and NOT a tmpfs
+      - ./account-token:/var/nevoflux/data/account-token:ro
+      - ./out:/work
+    tmpfs: [/tmp, /home/nevo/.gbrain, /home/nevo/.cache]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    deploy: { resources: { limits: { cpus: "2.0", memory: 4g, pids: 512 } } }
+    restart: unless-stopped
+
+volumes:
+  remote-data:    # this head's identity, browser profile and history
+```
+
+## The data volume is the head's identity
+
+`/var/nevoflux/data` holds `remote-control.json` — the channel and its pairing
+code — plus this head's browser profile and its conversation. It **must be a real
+volume, never a tmpfs**: on a tmpfs the identity dies with the container, every
+restart is a different head, and the paired phone can only report that it no
+longer connects. This is why the `remote` service does not list
+`/var/nevoflux/data` under `tmpfs`, while the task services do. (Since v0.3.14
+the image also declares `/var/nevoflux/data` as a `VOLUME`.)
+
+- **Deleting the volume un-pairs every phone** that was paired with this head.
+- **A corrupt `remote-control.json` refuses to start** rather than silently
+  generating a new identity, which would strand the paired phone. Delete the file
+  deliberately if you mean to re-pair.
+- The browser profile lives on the volume too, so **sites stay signed in across
+  restarts**.
+
+## Signing in to nevoflux.app
+
+The head needs an account token, and only a phone signed in to the **same
+account** can reach it. Three ways to supply it:
+
+| Method | How | Trade-off |
+| --- | --- | --- |
+| **Mounted file** (the Compose default) | Copy `account-token` from a signed-in desktop NevoFlux's data dir; mount it read-only at `/var/nevoflux/data/account-token`. | Keeps the token out of the process environment. |
+| **`NEVOFLUX_SERVICE_TOKEN`** | Inject the token as an env var / container secret. Takes precedence over the file; a blank value counts as unset. | One secret for many heads (each still opens its own channel), but the agent's own `bash` runs in this process and can read its environment. |
+| **Device sign-in** | `nevoflux-agent account login` runs the device-code flow in-process (no daemon needed): it prints a URL and code to approve on any device, then stores `account-token` in the data dir. `--print-token` also prints the raw token on stdout; `--no-save` prints it without writing the file. | Interactive, once per volume. Do not mount a read-only `account-token` over the same path if you sign in this way. |
+
+`nevoflux-agent account status` reports whether a token is present (and whether
+it came from the environment); `account logout` removes the stored file.
+
+## Mode and execution tier are fixed at startup
+
+The head resolves its chat mode and
+[Agent execution tier](/en/docs/settings/general#agent-execution-tiers) once, at
+launch, each on its own:
+
+1. `NEVOFLUX_REMOTE_MODE` / `NEVOFLUX_REMOTE_EXECUTION_TIER`, else
+2. `[remote_control]` in `config.toml`, else
+3. `agent` / `read-only`.
+
+```toml
+[remote_control]
+mode = "agent"                    # chat | browser | agent
+execution_tier = "browser-auto"   # read-only | browser-auto | browser-auto-local-read | full-auto
+```
+
+Setting one does not reset the other. An unrecognised mode falls back to `chat`,
+and an unrecognised tier to the safest tier — a typo never widens the grant.
+
+The phone shows both values and **can change neither**: a container has no
+local user standing by to take a grant back, so a phone that could raise the
+tier would make the setting a suggestion.
+
+## Failure behaviour
+
+- **Startup is all-or-nothing.** A missing account token, an unreachable account
+  service, an unwritable data dir or a browser that will not come up each exit
+  non-zero with the reason. A half-started container would look healthy to an
+  orchestrator and be useless to the person holding the phone.
+- **A browser that dies is relaunched** and rebound to the same conversation, and
+  the phone is told. Open pages are gone; signed-in sites are not. After **three
+  consecutive** failed relaunches the process exits so the orchestrator recreates
+  the container — hence `restart: unless-stopped`.
+
+## Security
+
+> **The pairing code is a secret, and not the only one.** Whoever has the code
+> drives this container at the mode and tier set above — but only from the
+> account the head signed in as. The relay binds a channel to the first account
+> that opens it and turns away any other, so a leaked code on its own reaches
+> nothing. Read the code out of the logs once and keep it like a password; it is
+> also stored in the data volume.
+
+- **Pick the tier for an unattended head.** At `full-auto` the agent's shell can
+  read the data volume, including the account token and the pairing identity.
+- The usual headless boundaries still apply: restrict the container's egress and
+  do not mount host credentials beyond the account token.
+- `[remote_control] ice_servers` and `[remote_control.cloudflare_turn]` only take
+  effect in a daemon built with the `webrtc` cargo feature, which the release
+  binaries (and so the published image) do not enable. In the shipped image every
+  connection goes through the relay; leave them unset.
+- `NEVOFLUX_PORTAL_URL` (default `https://portal.nevoflux.app`) and
+  `NEVOFLUX_RELAY_URL` (default `wss://relay.nevoflux.app`) point the head at
+  your own portal / relay if you run them.

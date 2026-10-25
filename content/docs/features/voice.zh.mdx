@@ -1,0 +1,108 @@
+---
+title: 语音
+description: 对智能体说话并听它回答——本地语音识别与合成、由哪个引擎运行,以及哪些数据会离开你的机器。
+---
+
+**v0.3.15 新增**:你可以在侧边栏中对智能体说话,并且(如果愿意)让它把回答朗读出来。
+语音识别和语音合成都在**本机**运行;不会有音频被发送到任何语音服务。
+
+## 快速开始
+
+1. 打开[设置 → General](/zh/docs/settings/general#语音模型与语音),在
+   **Speech Models** 下下载 **Speech input**。仅此一项就足以进行语音听写。
+2. 如果想听到语音回答,还需下载一种音色:**Spoken replies**(英文)、
+   **Chinese replies**(中文和英文)或 **Natural voice**(20 种语言,体积大)。然后在
+   **Voice** 下打开 **Speak replies**。
+3. 在侧边栏中,点击消息输入框旁的**麦克风按钮**并开始说话。你说的话会成为当前对话中
+   的一条普通消息——同样的历史、同样的工具、同样的权限档位。
+
+首次使用时浏览器会请求麦克风权限。再次点击该按钮(或语音栏上的 ✕)即可停止;静默一段
+时间后,语音输入也会自动停止。
+
+**打断。** 在回答被朗读时开口说话,它就会停止朗读,你无需等待即可改变方向。
+
+**Voice view**(默认关闭)会在语音开启时用波形取代消息气泡。回答仍会照常生成、保存并
+可被搜索——只是显示方式不同。
+
+## 语音输入
+
+两个识别引擎按语言分工:
+
+| 引擎 | 语言 | 说明 |
+| --- | --- | --- |
+| **SenseVoice** *(默认)* | 中文(普通话)、粤语、英语、日语、韩语 | 速度足以实时听写;由 **Speech input** 下载 |
+| **Whisper**(默认 `base`) | 其他语言 | 仅用于 SenseVoice 无法处理的语言 |
+
+Whisper 已内置,但其权重**不**在 Speech Models 下载器中。如需使用,请把 Hugging Face
+格式的 Whisper 模型(`config.json`、`tokenizer.json`、`model.safetensors`——不是
+whisper.cpp 的 `ggml-*.bin`)放到 `<cache>/nevoflux/models/whisper-base/`,或用
+`[tts.whisper] model_path` 指向它。更大的尺寸在英语以外的语言上明显更好,但更占内存:
+仅模型本身,`base` 约 585 MB,`small` 约 1.9 GB,`large-v3-turbo` 约 4.8 GB。
+
+智能体也可以转写你提供的音频文件。超过 30 秒的录音会先在说话停顿处切分再转写。
+
+## 语音回答
+
+两个合成引擎,自动选择:
+
+- **MOSS-TTS-Nano**(**Natural voice**)——中文及另外 19 种语言,音色更好。只要已安装
+  *并且*在本机上足够快,就会使用它。
+- **Kokoro**——兜底引擎。**Spoken replies** 下载的版本只会说英语;**Chinese replies**
+  下载的是能说中文和英文的较新 Kokoro 版本。
+
+"足够快"是实测出来的,不是猜的:智能体会对真实回答计时,并取最近几次测量的中位数。
+如果 MOSS 朗读耗时超过实际时长的 0.85 倍,回答就会卡顿,于是改由 Kokoro 接手。
+**Voice** 分组会告诉你当前由哪个引擎朗读及原因;**Re-measure** 会清除这一判定,让下一条
+回答重新尝试 MOSS(在关闭了占资源的程序或更新驱动后很有用)。**Voice** 列表只提供实际
+负责朗读的引擎的音色。
+
+只朗读回答正文:代码块会被跳过,Markdown 标记会被去掉。在朗读回答期间,模型会被要求
+"为耳朵而写"——先用完整的句子给出结论,不让代码、表格或列表承载主要意思。完整答案仍会
+以文字显示。
+
+**GPU。** 打开 **Use GPU when it helps**(默认开启)时,语音合成可以尝试 GPU——Windows 上
+为 **DirectML**(任何支持 DX12 的 GPU:NVIDIA、AMD 或 Intel),macOS 上为 **Core ML**——
+并且只有在实测比本机 CPU 更快时才会保留;很多时候并不更快。Linux 上语音始终在 CPU 上
+运行。如果某个 GPU 后端崩溃或失败,智能体会把它记录在 `[speech] failed_providers` 中,
+之后不再尝试;删除该条目即可重试(例如更新驱动后)。关闭此开关则固定使用 CPU。
+
+## 隐私
+
+- **音频留在本机。** 识别与合成都在本地运行;语音模型只是被下载,而不是被远程调用。
+- **转写结果是一条普通消息。** 识别完成后,你说的话会像打字输入一样发送给当前的模型
+  提供商。
+- **下载来源**为 `hf-mirror.com` / Hugging Face 和 GitHub(部分经由 `ghfast.top` 代理)。
+  每个文件都会按固定的大小和 SHA-256 摘要校验,被改动或替换的文件会被拒绝。模型保存在
+  `<cache>/nevoflux/models/`——Linux 为 `~/.cache/`,macOS 为 `~/Library/Caches/`,
+  Windows 为 `%LOCALAPPDATA%`。
+- **ElevenLabs** 是独立的:一个云端语音合成工具,只有在你于 `[tts.elevenlabs]` 下配置了
+  ElevenLabs API 密钥后,智能体才能使用。发送给它的文本会离开你的机器。
+
+## 配置
+
+语音偏好(**Speak replies**、**Voice**、GPU、**Voice view**)属于浏览器设置。引擎在
+[`config.toml`](/zh/docs/configuration) 中配置;所有字段均为可选,默认会在上述模型目录中
+查找。
+
+```toml
+[tts.sensevoice]
+# model_path  = "~/.cache/nevoflux/models/sensevoice-small.int8.onnx"
+# tokens_path = "~/.cache/nevoflux/models/sensevoice-tokens.txt"
+
+[tts.whisper]
+default_size = "base"      # tiny | base | small | medium | large-v3-turbo
+# model_path = "/path/to/whisper-small"   # Hugging Face 布局的目录
+
+[tts.kokoro]
+# default_voice = "af_heart"
+
+[tts.moss]
+# enabled = false          # 即使已安装 MOSS 也保持使用 Kokoro
+# default_voice = "Junhao"
+
+[speech]
+# 由智能体写入——仅在排障时编辑。
+# execution_provider = "cpu"   # auto(默认)| cpu | directml | cuda | coreml
+# rtf_budget = 0.85            # 超过此值,MOSS 被视为太慢,改由 Kokoro 朗读
+# failed_providers = []        # 在本机失败过的后端;清空以重试
+```

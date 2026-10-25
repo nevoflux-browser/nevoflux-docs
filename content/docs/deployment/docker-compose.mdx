@@ -1,20 +1,23 @@
 ---
 title: Docker Compose
-description: The shipped docker-compose.yml for headless NevoFlux Agent — services, environment, volumes, tmpfs, and container hardening, fully explained.
+description: The shipped docker-compose.yml for headless NevoFlux Agent — the headless, oneshot and remote services, environment, volumes, tmpfs, and container hardening, fully explained.
 ---
 
 `deploy/headless/docker-compose.yml` packages the `docker run` invocations as
-reusable, pre-hardened services, so you don't retype the flags. It defines two
+reusable, pre-hardened services, so you don't retype the flags. It defines three
 services.
 
 | Service | Mode | Use for |
 | --- | --- | --- |
-| **`headless`** | long-running service (`--daemon --headless --http-addr 0.0.0.0:8080`) | **Trusted tasks.** Serves the task API on `:8080`. Started by `docker compose up`. |
-| **`oneshot`** | one task per container | **Untrusted tasks.** Gated behind the `oneshot` Compose profile so `up` doesn't start it. |
+| **`headless`** | long-running service (`--daemon --headless --http-addr 0.0.0.0:8080 --a2a-addr 0.0.0.0:8084`) | **Trusted tasks.** Serves the task API on `:8080` and A2A on `:8084`. Started by `docker compose up`. |
+| **`oneshot`** | one task per container | **Untrusted tasks** — but see [the caveat](#the-oneshot-service): its `run --task` form is not wired up yet. Gated behind the `oneshot` profile. |
+| **`remote`** | `--daemon --remote-control` | **A phone-driven head** with no HTTP surface. Gated behind the `remote` profile. *(v0.3.14)* |
 
-Both apply the same container hardening (`read_only`, `cap_drop: ALL`,
-`no-new-privileges`, `pids` / cpu / memory limits, tmpfs data dir) and the same
-volumes (`./out:/work`, `base-profiles:/base-profiles:ro`).
+All three apply the same container hardening (`read_only`, `cap_drop: ALL`,
+`no-new-privileges`, `pids` / cpu / memory limits). `headless` and `oneshot` keep
+the data dir on a tmpfs and mount `./out:/work` and
+`base-profiles:/base-profiles:ro`; `remote` keeps its data dir on a **persistent
+volume** instead — see [The `remote` service](#the-remote-service).
 
 ## Use it
 
@@ -41,15 +44,17 @@ services:
       context: .
       dockerfile: Dockerfile
       # Image is DOWNLOADED from GitHub releases (no local compile). Pin versions:
-      #   args: { AGENT_VERSION: v0.3.13, BROWSER_VERSION: 0.3.13 }   # default: latest
+      #   args: { AGENT_VERSION: v0.3.16, BROWSER_VERSION: 0.3.16 }   # default: latest
       # To build from locally-staged artifacts instead, set: dockerfile: Dockerfile.local
     image: nevoflux/agent:latest
-    command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080"]
+    command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080",
+              "--a2a-addr", "0.0.0.0:8084"]
     ports:
       - "8080:8080"       # task API (+ OpenAI /v1): POST /tasks, GET /tasks/:id[/events], /metrics
       # - "8081:8081"     # dedicated OpenAI  (needs --openai-addr)
       # - "8082:8082"     # dedicated MCP     (needs --mcp-addr)
       # - "8083:8083"     # dedicated ACP     (needs --acp-addr)
+      - "8084:8084"       # A2A: /.well-known/agent-card.json, POST /a2a (0.3.0), POST /a2a/v1 (1.0)
       # - "6080:6080"     # noVNC in a browser: http://localhost:6080/vnc.html (NEVOFLUX_VNC=1)
       # - "5900:5900"     # raw VNC for native clients (NEVOFLUX_VNC=1). Keep both off in prod.
     environment:
@@ -58,6 +63,11 @@ services:
       # HTTPS_PROXY: "${EGRESS_PROXY}"
       # NO_PROXY: "127.0.0.1,localhost"      # so the in-process gateway isn't proxied
       NEVOFLUX_VNC: "0"                       # 1 (+ password file) to watch live on :5900 / :6080
+      # NEVOFLUX_A2A_TOKEN: ""                # set to require `Authorization: Bearer` on A2A
+      # NEVOFLUX_A2A_PUBLIC_URL: ""           # externally reachable base, if behind a proxy
+      # NEVOFLUX_A2A_CONTEXT_IDLE_SECS: "1800"
+      # NEVOFLUX_A2A_INLINE_MAX_BYTES: "262144"
+      # NEVOFLUX_WALL_CLOCK_SECS: "600"       # A2A streams don't cancel on disconnect; budget them
       RUST_LOG: "info"                        # log level (stderr → docker compose logs)
       # NEVOFLUX_HEADLESS_SCRIPT: /opt/nevoflux/fixed-flow.py   # fixed-script mode (no LLM)
       # NEVOFLUX_SESSION_MODE: "1"            # reuse ONE browser across a trusted task-flow
@@ -92,12 +102,20 @@ volumes:
 ### Notes on the config
 
 - **`command`** — `--headless` serves the task API and spawns a browser per task.
-  The task-API port also serves the OpenAI-compatible `/v1/chat/completions`. To
-  put OpenAI / MCP / ACP on their own ports, add their flags and publish the ports:
+  The task-API port also serves the OpenAI / Anthropic endpoints and A2A;
+  `--a2a-addr` adds a dedicated A2A port, published as `8084`. To add MCP, ACP or
+  more dedicated ports, add their flags and publish the ports (see
+  [interfaces and ports](/en/docs/deployment/task-api#interfaces-and-ports)):
   ```yaml
-  command: ["--daemon","--headless","--http-addr","0.0.0.0:8080",
+  command: ["--daemon","--headless","--http-addr","0.0.0.0:8080","--a2a-addr","0.0.0.0:8084",
             "--openai-addr","0.0.0.0:8081","--mcp-addr","0.0.0.0:8082","--acp-addr","0.0.0.0:8083"]
   ```
+- **A2A is published, and unauthenticated, by default.** `docker compose up`
+  exposes `:8084` with no `NEVOFLUX_A2A_TOKEN`. Set the token, or remove the port
+  and `--a2a-addr` if you don't use A2A — remembering that A2A also answers on
+  `:8080` regardless. (The comment in the shipped file saying A2A "is not served
+  on `--http-addr`" does not match the v0.3.16 code.) See
+  [A2A](/en/docs/deployment/a2a).
 - **Provider key** — the daemon reads the provider-specific var (`ANTHROPIC_API_KEY`
   / `OPENAI_API_KEY` / …). It must match the image's baked `[llm].provider`; for
   another provider, set its key **and** rebuild with `--build-arg LLM_PROVIDER=…`.
@@ -137,13 +155,48 @@ docker compose --profile oneshot run --rm oneshot \
       --profile base1 --policy browser-only --wall-clock 300s --token-budget 200k
 ```
 
-> **Caveat — still open as of v0.3.13.** The `oneshot` service and the `run --task`
+> **Caveat — still open as of v0.3.16.** The `oneshot` service and the `run --task`
 > one-shot form ship in the deploy assets, but the `run` subcommand is **not wired
-> into the agent binary yet** — it is currently ignored, and only `--daemon
-> --headless` service mode is active. Until it lands, get per-task isolation by
+> into the agent binary yet** (re-checked against v0.3.16) — the arguments are
+> ignored and no task runs; only `--daemon --headless` service mode is active. Until it lands, get per-task isolation by
 > running a **fresh `headless` container per task** (bring it up, submit one task,
 > tear it down), or use [session mode](/en/docs/deployment/task-api#session-mode)
 > with `end_session` for trusted sequential flows.
+
+## The `remote` service
+
+*New in v0.3.14.* Drives this container from a phone through nevoflux.app; it
+serves no HTTP, so it publishes no ports.
+
+```yaml
+  remote:
+    profiles: ["remote"]                      # `docker compose --profile remote up remote`
+    image: nevoflux/agent:latest
+    command: ["--daemon", "--remote-control"]
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY (or your provider's key)}"
+      NEVOFLUX_REMOTE_MODE: "agent"           # fixed at startup; the phone can't change it
+      NEVOFLUX_REMOTE_EXECUTION_TIER: "browser-auto"
+      RUST_LOG: "info"
+    volumes:
+      - remote-data:/var/nevoflux/data        # REQUIRED — a real volume, NOT a tmpfs
+      - ./account-token:/var/nevoflux/data/account-token:ro   # nevoflux.app account token
+      - ./out:/work
+    tmpfs: [/tmp, /home/nevo/.gbrain, /home/nevo/.cache]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  remote-data:    # this head's identity, browser profile and history — deleting it un-pairs every phone
+```
+
+The data volume holds the channel and its pairing code; on a tmpfs, every restart
+would be a new head and the paired phone would stop connecting. Setup, sign-in
+options (`NEVOFLUX_SERVICE_TOKEN`, `nevoflux-agent account login`), the mode / tier
+defaults and failure behaviour are on
+[Remote control (container)](/en/docs/deployment/remote-control).
 
 ## What to change for your setup
 
@@ -152,11 +205,12 @@ docker compose --profile oneshot run --rm oneshot \
 | `environment.ANTHROPIC_API_KEY` | Your provider key. Better: leave it empty and inject via `HTTP_PROXY` so a prompt-injected agent can't read it from env. |
 | `HTTP_PROXY` / `HTTPS_PROXY` (`EGRESS_PROXY`) | Point at an egress proxy that **allowlists** the LLM API + your task domains — this is the hard network boundary. |
 | `volumes: base-profiles` | Populate this named volume once with pre-authenticated login profiles (a human logs in), or set `external: true` to reuse one; it's cloned per task. |
-| `volumes: ./out:/work` | Host dir where each task's `result.json` + `debug-bundle/` are drained. |
+| `volumes: ./out:/work` | Host dir mounted at the image's working directory `/work`. Note that task results go to the task workspace under `/tmp/nevoflux-profiles` by default, not here — see [status / result](/en/docs/deployment/task-api#status--result). |
 | `ports` / VNC | Uncomment `6080` / `5900` **and** set `NEVOFLUX_VNC=1` (+ a password file) only to watch a run live; keep off in prod. |
 | `deploy.resources.limits` | Tune cpu / memory / pids per host. |
 | `security_opt: seccomp` | Add a tuned seccomp profile once available. |
 | `networks` | Attach `headless` to an egress-restricted network. |
+| `--a2a-addr` / `8084` / `NEVOFLUX_A2A_TOKEN` | Set a token, or drop the A2A port if you don't use it. |
 
 ## Base profiles (login state)
 

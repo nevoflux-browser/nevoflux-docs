@@ -1,19 +1,21 @@
 ---
 title: Docker Compose
-description: 随发行版附带的无头 NevoFlux Agent docker-compose.yml——服务、环境变量、卷、tmpfs 与容器加固，逐项讲解。
+description: 随发行版附带的无头 NevoFlux Agent docker-compose.yml——headless、oneshot 与 remote 三个服务、环境变量、卷、tmpfs 与容器加固，逐项讲解。
 ---
 
 `deploy/headless/docker-compose.yml` 把 `docker run` 调用打包成可复用、预加固的服务，
-省去你反复输入各种参数。它定义了两个服务。
+省去你反复输入各种参数。它定义了三个服务。
 
 | 服务 | 模式 | 适用于 |
 | --- | --- | --- |
-| **`headless`** | 长驻服务（`--daemon --headless --http-addr 0.0.0.0:8080`） | **可信任务。** 在 `:8080` 上提供任务 API。由 `docker compose up` 启动。 |
-| **`oneshot`** | 一任务一容器 | **不可信任务。** 被 `oneshot` Compose profile 门控，因此 `up` 不会启动它。 |
+| **`headless`** | 长驻服务（`--daemon --headless --http-addr 0.0.0.0:8080 --a2a-addr 0.0.0.0:8084`） | **可信任务。** 在 `:8080` 上提供任务 API，在 `:8084` 上提供 A2A。由 `docker compose up` 启动。 |
+| **`oneshot`** | 一任务一容器 | **不可信任务**——但请看[注意事项](#oneshot-服务)：它的 `run --task` 形式尚未接通。被 `oneshot` profile 门控。 |
+| **`remote`** | `--daemon --remote-control` | **由手机驱动的端**，没有 HTTP 接口。被 `remote` profile 门控。*（v0.3.14）* |
 
-两者应用相同的容器加固（`read_only`、`cap_drop: ALL`、`no-new-privileges`、pids /
-cpu / 内存限制、tmpfs 数据目录）以及相同的卷（`./out:/work`、
-`base-profiles:/base-profiles:ro`）。
+三者应用相同的容器加固（`read_only`、`cap_drop: ALL`、`no-new-privileges`、pids /
+cpu / 内存限制）。`headless` 与 `oneshot` 把数据目录放在 tmpfs 上，并挂载 `./out:/work`
+与 `base-profiles:/base-profiles:ro`；`remote` 则把数据目录放在**持久卷**上——见
+[`remote` 服务](#remote-服务)。
 
 ## 使用方法
 
@@ -40,15 +42,17 @@ services:
       context: .
       dockerfile: Dockerfile
       # 镜像从 GitHub 发行版下载（无需本地编译）。固定版本：
-      #   args: { AGENT_VERSION: v0.3.13, BROWSER_VERSION: 0.3.13 }   # 默认：latest
+      #   args: { AGENT_VERSION: v0.3.16, BROWSER_VERSION: 0.3.16 }   # 默认：latest
       # 若要改从本地暂存产物构建，设置：dockerfile: Dockerfile.local
     image: nevoflux/agent:latest
-    command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080"]
+    command: ["--daemon", "--headless", "--http-addr", "0.0.0.0:8080",
+              "--a2a-addr", "0.0.0.0:8084"]
     ports:
       - "8080:8080"       # 任务 API（+ OpenAI /v1）：POST /tasks、GET /tasks/:id[/events]、/metrics
       # - "8081:8081"     # 专用 OpenAI （需要 --openai-addr）
       # - "8082:8082"     # 专用 MCP    （需要 --mcp-addr）
       # - "8083:8083"     # 专用 ACP    （需要 --acp-addr）
+      - "8084:8084"       # A2A：/.well-known/agent-card.json、POST /a2a（0.3.0）、POST /a2a/v1（1.0）
       # - "6080:6080"     # 浏览器中的 noVNC：http://localhost:6080/vnc.html（NEVOFLUX_VNC=1）
       # - "5900:5900"     # 原生客户端的原始 VNC（NEVOFLUX_VNC=1）。生产中两者都关闭。
     environment:
@@ -57,6 +61,11 @@ services:
       # HTTPS_PROXY: "${EGRESS_PROXY}"
       # NO_PROXY: "127.0.0.1,localhost"      # 让进程内网关不走代理
       NEVOFLUX_VNC: "0"                       # 设 1（+ 密码文件）以在 :5900 / :6080 实时观看
+      # NEVOFLUX_A2A_TOKEN: ""                # 设置后 A2A 需要 `Authorization: Bearer`
+      # NEVOFLUX_A2A_PUBLIC_URL: ""           # 位于代理之后时的对外可达基址
+      # NEVOFLUX_A2A_CONTEXT_IDLE_SECS: "1800"
+      # NEVOFLUX_A2A_INLINE_MAX_BYTES: "262144"
+      # NEVOFLUX_WALL_CLOCK_SECS: "600"       # A2A 流断开不会取消任务；请设预算
       RUST_LOG: "info"                        # 日志级别（stderr → docker compose logs）
       # NEVOFLUX_HEADLESS_SCRIPT: /opt/nevoflux/fixed-flow.py   # 固定脚本模式（无 LLM）
       # NEVOFLUX_SESSION_MODE: "1"            # 在一段可信任务流中复用同一个浏览器
@@ -91,12 +100,17 @@ volumes:
 ### 配置说明
 
 - **`command`** —— `--headless` 提供任务 API 并为每个任务派生一个浏览器。任务 API 端口
-  也提供 OpenAI 兼容的 `/v1/chat/completions`。要把 OpenAI / MCP / ACP 拆到各自端口，
-  加上相应标志并发布端口：
+  也提供 OpenAI / Anthropic 端点与 A2A；`--a2a-addr` 额外为 A2A 开一个专用端口，发布为
+  `8084`。要加上 MCP、ACP 或更多专用端口，加上相应标志并发布端口（见
+  [接口与端口](/zh/docs/deployment/task-api#接口与端口)）：
   ```yaml
-  command: ["--daemon","--headless","--http-addr","0.0.0.0:8080",
+  command: ["--daemon","--headless","--http-addr","0.0.0.0:8080","--a2a-addr","0.0.0.0:8084",
             "--openai-addr","0.0.0.0:8081","--mcp-addr","0.0.0.0:8082","--acp-addr","0.0.0.0:8083"]
   ```
+- **A2A 默认对外发布且无需认证。** `docker compose up` 会在没有 `NEVOFLUX_A2A_TOKEN` 的情况下
+  暴露 `:8084`。请设置令牌；不用 A2A 的话就去掉该端口与 `--a2a-addr`——并记住 A2A 无论如何
+  也会在 `:8080` 上响应。（官方文件中说 A2A"不在 `--http-addr` 上提供"的注释与 v0.3.16 代码
+  不符。）见 [A2A](/zh/docs/deployment/a2a)。
 - **服务商密钥** —— 守护进程读取该服务商专用变量（`ANTHROPIC_API_KEY` /
   `OPENAI_API_KEY` / …）。它必须与镜像内置的 `[llm].provider` 一致；换其他服务商时，
   既要在此设置其密钥，**也要**用 `--build-arg LLM_PROVIDER=…` 重新构建。
@@ -134,11 +148,43 @@ docker compose --profile oneshot run --rm oneshot \
       --profile base1 --policy browser-only --wall-clock 300s --token-budget 200k
 ```
 
-> **注意事项——截至 v0.3.13 仍未接通。** `oneshot` 服务与 `run --task` 一次性形式随部署
-> 资产附带，但 `run` 子命令**尚未接入 agent 二进制**——目前它会被忽略，只有
-> `--daemon --headless` 服务模式生效。在其落地之前，请通过**为每个任务运行一个全新的
+> **注意事项——截至 v0.3.16 仍未接通。** `oneshot` 服务与 `run --task` 一次性形式随部署
+> 资产附带，但 `run` 子命令**尚未接入 agent 二进制**（已对 v0.3.16 重新核实）——参数会被
+> 忽略、不会运行任何任务，只有 `--daemon --headless` 服务模式生效。在其落地之前，请通过**为每个任务运行一个全新的
 > `headless` 容器**（启动、提交一个任务、销毁）来获得按任务隔离，或对可信的顺序流程使用
 > 带 `end_session` 的[会话模式](/zh/docs/deployment/task-api#会话模式)。
+
+## `remote` 服务
+
+*v0.3.14 新增。* 通过 nevoflux.app 由手机驱动该容器；它不提供 HTTP，因此不发布任何端口。
+
+```yaml
+  remote:
+    profiles: ["remote"]                      # `docker compose --profile remote up remote`
+    image: nevoflux/agent:latest
+    command: ["--daemon", "--remote-control"]
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY (or your provider's key)}"
+      NEVOFLUX_REMOTE_MODE: "agent"           # 启动时固定；手机无法修改
+      NEVOFLUX_REMOTE_EXECUTION_TIER: "browser-auto"
+      RUST_LOG: "info"
+    volumes:
+      - remote-data:/var/nevoflux/data        # 必需——真正的卷，不能是 tmpfs
+      - ./account-token:/var/nevoflux/data/account-token:ro   # nevoflux.app 账号令牌
+      - ./out:/work
+    tmpfs: [/tmp, /home/nevo/.gbrain, /home/nevo/.cache]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  remote-data:    # 该端的身份、浏览器配置与历史——删除它会解除所有手机的配对
+```
+
+数据卷保存通道及其配对码；放在 tmpfs 上，每次重启都会变成一个新的端，已配对的手机就再也
+连不上了。部署方式、登录选项（`NEVOFLUX_SERVICE_TOKEN`、`nevoflux-agent account login`）、
+模式 / 档位的默认值以及故障行为，见[远程控制（容器）](/zh/docs/deployment/remote-control)。
 
 ## 针对你的环境要改什么
 
@@ -147,11 +193,12 @@ docker compose --profile oneshot run --rm oneshot \
 | `environment.ANTHROPIC_API_KEY` | 你的服务商密钥。更佳做法：留空并通过 `HTTP_PROXY` 注入，使被提示注入的 agent 无法从环境变量读取。 |
 | `HTTP_PROXY` / `HTTPS_PROXY`（`EGRESS_PROXY`） | 指向一个**白名单**只放行 LLM API 与你任务域名的出口代理——这是硬网络边界。 |
 | `volumes: base-profiles` | 一次性用预先登录的配置填充该命名卷（由人工登录），或设 `external: true` 复用已有卷；按任务克隆。 |
-| `volumes: ./out:/work` | 每个任务 `result.json` + `debug-bundle/` 落盘的宿主目录。 |
+| `volumes: ./out:/work` | 挂到镜像工作目录 `/work` 的宿主目录。注意任务结果默认写在 `/tmp/nevoflux-profiles` 下的任务工作区，而不是这里——见[状态与结果](/zh/docs/deployment/task-api#状态与结果)。 |
 | `ports` / VNC | 仅在需要实时观看时取消 `6080` / `5900` 注释**并**设置 `NEVOFLUX_VNC=1`（+ 密码文件）；生产中关闭。 |
 | `deploy.resources.limits` | 按宿主调 cpu / 内存 / pids。 |
 | `security_opt: seccomp` | 备好后加上一份调好的 seccomp profile。 |
 | `networks` | 把 `headless` 接入出口受限的网络。 |
+| `--a2a-addr` / `8084` / `NEVOFLUX_A2A_TOKEN` | 设置令牌；不用 A2A 就去掉该端口。 |
 
 ## Base 配置（登录状态）
 

@@ -1,0 +1,90 @@
+---
+title: Jev(可选)
+description: 一个可选、默认关闭的第三方服务,决定智能体能看到哪些工具、技能和上下文——以及它会发送什么。
+---
+
+**Jev**(TypeSafe System One)是 v0.3.16 新增的可选**决策服务**。开启后,智能体会在
+一轮对话中向 Jev 提几个小问题——提供哪些工具、是否加载某个技能、一个很大的工具结果
+模型需要看多少——并据此让模型的上下文更小、更省钱。
+
+**Jev 默认关闭,关闭时不会向它发送任何请求**——智能体的行为与没有 Jev 时完全一样。
+它是由 **TypeSafe** 运营的独立服务:你需要自备 Jev API 密钥,费用由 TypeSafe 收取,
+与模型提供商的费用分开计算。
+
+> **开启 Jev 会把对话数据发送给第三方。** 除敏感网站(见下文)外,页面内容和工具结果
+> 都会发送到你配置的 Jev 端点。首次开启 Jev 时,NevoFlux 会要求你确认这一点。开启前
+> 请先阅读[隐私部分](#jev-能看到什么)。
+
+## 开启
+
+打开 **设置 → Jev**(`nevoflux://settings`,侧栏中的 **Jev**)。
+
+1. 在 **Connection** 下确认 **Endpoint**(默认
+   `https://api.typesafe.ai/v1/systemone`),并粘贴你的 **API key**。
+2. 点击 **Test connection**。它会报告几次请求的中位延迟并给出建议超时;点击
+   **Use … ms** 即可应用。
+3. 打开 **Use Jev** 并确认提示。
+
+每项修改都会立即保存到 [`config.toml`](/zh/docs/configuration) 的 `[jev]` 节。
+
+## 决策点
+
+**Decision points** 下的每个决策点都可单独开关:
+
+| 开关 | 默认 | Jev 决定什么 |
+| --- | --- | --- |
+| **Choose the tools for each task** | 关 | 本次任务除核心工具外还向模型提供哪些工具。默认关闭,因为按任务变化的工具列表会破坏提示词缓存,在测试中花的钱比省下的还多。 |
+| **Load a skill when the request clearly needs one** | 开 | 是否在本轮开始时加载一个技能(仅当置信度超过阈值)。 |
+| **Grade large tool results** | 开 | 模型现在需要看到大型工具结果的多少;完整结果会被保留,本轮稍后可以取回。 |
+| **Rebuild earlier turns when it pays off** | 开 | 当节省的 token 超过失去提示词缓存的代价时,是否重建发送给模型的对话历史。 |
+| **Ask before risky actions** | 关 | 对于你的[权限档位](/zh/docs/settings/general#agent-execution-权限档位)本会放行的工具调用,是否仍先询问你。它只能*增加*确认——绝不会批准该档位不允许的操作。 |
+
+如果 Jev 响应慢或无法访问,智能体会对该决策改用自身的内置规则并继续执行;超时绝不会
+让本轮失败。将鼠标悬停在侧边栏回复下方的 token 行上,可以看到这条回复发出了多少次
+Jev 请求——大多数请求都回退时也会注明。
+
+**适用范围。** Jev 的上下文决策只适用于由智能体自己驱动的提供商(云端 API 和自定义
+提供商)。使用自带智能体循环的提供商——Claude Code、Gemini CLI、Antigravity 或
+OpenClaw——时,只有 **Ask before risky actions** 生效;使用[本地模型](/zh/docs/configuration/local-models)
+时,Jev 完全不适用。设置页会在开关下方说明这一点。
+
+## Jev 能看到什么
+
+- **普通页面:** 与决策相关的页面内容和工具结果。
+- **敏感网站:** 只有域名、页面标题和元素数量——绝不包含页面文本或工具结果。内置列表
+  涵盖常见的银行、支付、邮箱、医疗和政府网站(展开 **Built-in list** 查看);你可以在
+  **Sensitive sites** 下添加自己的域名,每行一个(包含子域名)。私有和回环 IP 地址、
+  单标签主机名以及内网后缀(`.local`、`.internal`、`.lan`、`.corp`、`.home.arpa`、
+  `.intranet`)始终被视为敏感。
+- **无法确定来源页面的内容:** MCP 工具输出、以及来自已无法识别的标签页的内容,按敏感
+  网站处理(仅元数据)。
+- **并非来自页面的内容**——你自己的消息、本地文件内容、shell 输出——不受敏感网站
+  列表过滤。
+
+其他防护:远程端点必须使用 **HTTPS**(纯 `http://` 只允许回环地址),不跟随重定向;
+并且在[本地模型](/zh/docs/configuration/local-models#localonly-防护保证了什么)生效期间,
+只能访问回环地址的端点。
+
+## `[jev]`
+
+```toml
+[jev]
+enabled = false
+endpoint = "https://api.typesafe.ai/v1/systemone"
+api_key = ""             # 为空 → 使用 NEVOFLUX_API_KEY_TYPESAFE 环境变量
+timeout_ms = 800         # 100–10000
+model = "jev-latest"
+sensitive_domains = []   # 追加到内置列表
+tools_k = 10             # Jev 可在核心工具之外挑选的工具数
+skill_threshold = 0.8    # 置信度达到此值才加载技能
+
+[jev.points]
+tools = false
+skills = true
+visibility = true
+rebuild = true
+permissions = false
+```
+
+密钥可以来自 `config.toml`,也可以来自 `NEVOFLUX_API_KEY_TYPESAFE` 环境变量;与其他
+密钥一样,若写在 `config.toml` 中,它以明文保存。

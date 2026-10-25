@@ -8,13 +8,17 @@ providers. This is the tab the first-run setup sends you to.
 
 ## Layout
 
-Providers are shown as cards in two groups:
+The tab has four groups, top to bottom:
 
+- **On-device** — run a model on this machine (new in v0.3.16). See
+  [below](#on-device).
 - **LLM Providers** — cloud APIs (Anthropic, OpenAI, DeepSeek, Qwen, Gemini, Groq,
   OpenRouter, Mistral, xAI/Grok, Cohere, Perplexity, Together) and **local**
   (Ollama).
 - **Agents** — command-line/agent providers (Claude Code, Antigravity, Kimi Agent,
   OpenClaw).
+- **Custom Providers** — endpoints you add yourself (new in v0.3.15). See
+  [below](#custom-providers).
 
 > **Antigravity** replaced the **Gemini CLI** tile in v0.3.12. It is keyless and
 > requires the `agy` and `antigravity-acp` CLIs on your `PATH` — see
@@ -45,3 +49,38 @@ The sidebar can now answer.
 See [Configuration → Providers & API keys](/en/docs/configuration/providers) for the
 full provider table and the environment variables you can use instead of storing
 keys here.
+
+## On-device
+
+The **On-device inference** card downloads and runs a local model, with no API key.
+**Set up** checks the machine and opens a consent dialog showing exactly what will be
+downloaded (engine and model, sizes, sources, free disk space) — nothing is downloaded
+before you click **Download**. Once installed, **Set as default** makes it the active
+provider, and **Model**, **Backend** and **Context** selectors appear under the card.
+
+While on-device is active, NevoFlux refuses model requests to anything off the machine.
+Choosing a cloud provider then asks you to confirm (**Switch anyway** / **Keep
+on-device**), and the change is applied after NevoFlux restarts. Details, hardware
+support and what local mode changes: [On-device models](/en/docs/configuration/local-models).
+
+## Custom providers
+
+Click **Add Custom Provider** to connect any OpenAI-compatible or Anthropic endpoint —
+a self-hosted model, a company gateway, a proxy:
+
+| Field | Notes |
+| --- | --- |
+| **Name** | Shown on the card; safe to rename later |
+| **API Type** | **OpenAI-compatible** or **Anthropic** |
+| **API Key** | Optional — leave empty for a keyless endpoint |
+| **Model** | The model id the endpoint expects |
+| **Base URL** | Required. Include the version path for OpenAI-compatible, e.g. `https://host/v1` |
+| **Context Window** | Default 128000 (OpenAI-compatible) / 200000 (Anthropic); used to size context compression |
+| **Enable streaming (SSE)** | On by default; turn off for servers that don't stream properly |
+| **Card Colour** | Optional accent for the card |
+| **Set as active provider** | Make it the provider the agent uses |
+
+Each custom card has a menu with **Edit** and **Delete**. Deleting the active one switches to
+another configured provider. See
+[Providers → Custom providers](/en/docs/configuration/providers#custom-providers) for
+how they are stored in `config.toml`.

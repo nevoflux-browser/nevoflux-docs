@@ -1,31 +1,39 @@
 ---
 title: 无头部署（Docker）
-description: 将 NevoFlux Agent 作为容器化服务运行——由 HTTP 任务 API 驱动的无头浏览器，无需图形界面。自 agent v0.3.10 起提供。
+description: 将 NevoFlux Agent 作为容器化服务运行——通过 HTTP（任务 API、OpenAI / Anthropic 兼容 API、MCP、A2A）或手机驱动的无头浏览器，无需图形界面。自 agent v0.3.10 起提供；已更新至 v0.3.16。
 ---
 
 NevoFlux Agent 可以在容器中以**无头（headless）**方式运行，无需桌面环境。官方
-**`nevoflux/agent`** 镜像打包了守护进程、无头浏览器以及内置知识库，并对外提供一个
-HTTP **任务 API**。你提交一条自然语言任务，agent 便会驱动真实浏览器（自动化 + 计算机
-控制 + shell/文件工具）并返回结果。
+**`nevoflux/agent`** 镜像打包了守护进程、无头浏览器以及内置知识库。你交给它一条自然语言
+任务，agent 便会驱动真实浏览器（自动化 + 计算机控制 + shell/文件工具）并返回结果。
 
 > **“无头”指的是*部署*模式，而非功能缩水。** 无头任务能完成桌面会话所能做的一切——
 > 浏览网页、使用工具、运行技能、读写知识库。唯一的区别是没有可见窗口。
 
 本章节自 **nevoflux-agent v0.3.10** 起提供。自 **v0.3.13** 起，镜像会在每次发布时
-**推送到 Docker Hub**，因此你不再需要自行构建。本章包括：
+**推送到 Docker Hub**。此后容器又多了几种接入方式：
 
-- **[Docker 镜像](/zh/docs/deployment/docker)** —— 如何拉取或构建、构建参数、运行模式以及实时观看（VNC）。
+| 接入方式 | 是什么 | 起始版本 |
+| --- | --- | --- |
+| [任务 API](/zh/docs/deployment/task-api) | `POST /tasks`、状态、SSE 事件、后续轮次、逐轮用量 | v0.3.10 |
+| [OpenAI 与 Anthropic API](/zh/docs/deployment/llm-apis) | Chat Completions（流式）、Responses、Messages、`/v1/models`；按模型路由的脚本后端 | v0.3.14 / v0.3.16 |
+| [MCP 端点与管理 API](/zh/docs/deployment/mcp-endpoint) | 内置浏览器 / 计算机工具、Python 脚本工具、受令牌保护的部署 API | v0.3.14 |
+| [A2A](/zh/docs/deployment/a2a) | Agent2Agent v0.3 与 v1.0——被其他 agent 调用，也调用它们 | v0.3.16 |
+| [远程控制（容器）](/zh/docs/deployment/remote-control) | 用手机驱动容器；完全没有 HTTP | v0.3.14 |
+
+以及打包方式：
+
+- **[Docker 镜像](/zh/docs/deployment/docker)** —— 如何拉取或构建、构建参数、运行模式、浏览器引擎以及实时观看（VNC）。
 - **[Docker Compose](/zh/docs/deployment/docker-compose)** —— 随发行版附带的 `docker-compose.yml`，逐项讲解。
-- **[任务 API 与接口](/zh/docs/deployment/task-api)** —— HTTP 任务 API、OpenAI / MCP / ACP 前端、会话模式、固定脚本模式，以及完整的环境变量 / 命令行标志参考。
 
 ## 快速开始
 
 ```bash
 # 1. 拉取官方镜像（amd64 + arm64；自 v0.3.13 起发布）
-docker pull nevoflux/agent:0.3.13          # 或 :latest
+docker pull nevoflux/agent:0.3.16          # 或 :latest
 
 # 2. 运行长驻服务（运行时需要你的服务商密钥）
-docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:0.3.13
+docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:0.3.16
 
 # 3. 提交一个浏览器任务
 curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
@@ -34,6 +42,9 @@ curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
 curl -s localhost:8080/tasks/task-0
 # → {"id":"task-0","status":"succeeded","output":"The title is Example Domain.", ...}
 ```
+
+同一端口也响应 OpenAI 与 Anthropic SDK 以及 A2A 客户端——它们**都没有认证**，所以只把它
+发布给你信任的调用方（见[两种运行模式](#两种运行模式按信任级别选择)）。
 
 需要定制构建（额外的 pack、固定的 agent/browser 版本组合、未发布的二进制）？见
 [Docker 镜像 → 自行构建](/zh/docs/deployment/docker#自行构建)。
@@ -46,9 +57,9 @@ curl -s localhost:8080/tasks/task-0
 | 组件 | 说明 |
 | --- | --- |
 | **守护进程** | `nevoflux-agent`（从 agent 发行版下载），核心处理服务 |
-| **浏览器** | 无头 Gecko 构建（从 browser 发行版下载） |
+| **浏览器** | 无头 Gecko 构建（从 browser 发行版下载）；自 v0.3.15 起，amd64 上由[进程内引擎](/zh/docs/deployment/docker#浏览器引擎)优先提供浏览器工具 |
 | **显示** | `Xvfb` 虚拟 X 显示（`:99`）—— Linux 浏览器需要一个显示 |
-| **知识库** | 默认安装并启用 **GBrain**（参见[知识库](/zh/docs/knowledge-base)） |
+| **知识库** | 默认安装并启用 **GBrain**（参见[知识库](/zh/docs/knowledge-base)）；运行时设 `NEVOFLUX_BRAIN_ENABLED=0` 可关闭 |
 | **基础镜像** | `debian:bookworm-slim`，以**非 root** 用户（`nevo`，uid 10001）运行，`tini` 作为 PID 1 |
 | **向量嵌入** | 内置 ONNX Runtime + `e5` 模型——搜索完全离线运行（`HF_HUB_OFFLINE=1`） |
 
@@ -71,13 +82,14 @@ curl -s localhost:8080/tasks/task-0
 
 - **网络出口策略** —— 白名单只放行 LLM API 与你的任务域名（出口代理，或有防火墙的网络 / k8s `NetworkPolicy`）。
 - **不挂载宿主凭据** —— 只挂载 `/work`（结果）和只读的 base-profiles。最好通过前置代理注入 API 密钥，使被提示注入的 agent 无法从环境变量读取它。
+- **谁能访问这些端口。** 任务 API、OpenAI / Anthropic 端点与 `/mcp` 都没有认证；A2A 有可选的 Bearer 令牌；只有管理 API 强制要求令牌。请把网络可达性当作访问控制。
 
 进程内的防护（每任务工具白名单、文件沙箱、`SENSITIVE_PATHS`、域名校验）是纵深防御的
 **层**，而非边界。
 
-> **一次性路径的现状——截至 v0.3.13 仍未接通。** 随附的部署资产包含 `oneshot` Compose
+> **一次性路径的现状——截至 v0.3.16 仍未接通。** 随附的部署资产包含 `oneshot` Compose
 > 服务与 `run --task …` 一次性形式，但该 CLI 子命令**尚未接入 agent 二进制**（已对
-> v0.3.13 核实）——目前只有 `--daemon --headless` 服务模式生效。在其落地之前，可通过
+> v0.3.16 重新核实）——目前只有 `--daemon --headless` 服务模式生效。在其落地之前，可通过
 > **为每个任务运行一个全新的服务容器**（启动、提交一个任务、销毁容器）来获得真正的按任务
 > 隔离，或对可信的顺序流程使用带 `end_session` 的[会话模式](/zh/docs/deployment/task-api#会话模式)。
 > 详见 [Compose 页面](/zh/docs/deployment/docker-compose#oneshot-服务)。

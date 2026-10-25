@@ -1,0 +1,228 @@
+---
+title: OpenAI & Anthropic APIs
+description: Drive a headless NevoFlux container from any OpenAI or Anthropic SDK — Chat Completions, the Responses API, and the Messages API, blocking or streaming — and route each model name to the agent loop or to a Python script backend.
+---
+
+A headless container speaks three LLM wire formats. Point an official SDK at it
+and the prompt becomes a **task**: the agent (or a script you supply) drives the
+browser and its answer comes back as the assistant message.
+
+| Protocol | Endpoint | Served on | Since |
+| --- | --- | --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` | `--http-addr` and `--openai-addr` | v0.3.10 (streaming since v0.3.14) |
+| OpenAI model list | `GET /v1/models` | `--http-addr` and `--openai-addr` | v0.3.14 |
+| OpenAI Responses | `POST /v1/responses` | `--http-addr` and `--openai-addr` | v0.3.16 |
+| Anthropic Messages | `POST /v1/messages` | `--http-addr` and `--anthropic-addr` | v0.3.16 |
+
+All four also answer on the main task port, so the default image command
+(`--daemon --headless --http-addr 0.0.0.0:8080`) already serves them. The
+dedicated flags only add a second listener.
+
+> **None of these endpoints checks the API key.** `Authorization: Bearer …` and
+> `x-api-key` are accepted and ignored — SDKs insist on sending *something*, so
+> pass any placeholder. Whoever can reach the port can run tasks with the
+> container's provider key and browser. The network boundary (a private network,
+> an authenticating reverse proxy) is the only gate.
+
+## Quick start with the official SDKs
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://host:8080/v1", api_key="unused")
+
+# Chat Completions
+client.chat.completions.create(
+    model="nevoflux",
+    messages=[{"role": "user", "content": "open example.com, report the title"}])
+
+# Responses API
+client.responses.create(model="nevoflux", input="open example.com, report the title")
+```
+
+```python
+import anthropic
+client = anthropic.Anthropic(base_url="http://host:8080", api_key="unused")
+client.messages.create(
+    model="nevoflux", max_tokens=1024,
+    messages=[{"role": "user", "content": "open example.com, report the title"}])
+```
+
+Note the base URLs: the OpenAI SDK wants `…/v1`, the Anthropic SDK wants the bare
+host (it appends `/v1/messages` itself).
+
+With `curl`:
+
+```bash
+curl -s localhost:8080/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"open example.com, report title"}]}'
+# → {"object":"chat.completion","choices":[{"message":{"role":"assistant",
+#      "content":"...Example Domain"},"finish_reason":"stop"}],"usage":{...}, ...}
+```
+
+## How a request becomes a task
+
+- **The prompt is the last non-empty user message** — the last `user` entry in
+  `messages` (Chat Completions, Messages) or in `input` (Responses; a bare string
+  counts). A request with no user text is rejected with `400`.
+- **Everything else comes from the environment.** These requests carry no
+  `mode`, `profile`, `policy` or caps, so they use the container's
+  `NEVOFLUX_TASK_*` / `NEVOFLUX_POLICY_*` / `NEVOFLUX_WALL_CLOCK_SECS` defaults
+  (see [Task API → env-var defaults](/en/docs/deployment/task-api#env-var-defaults-for-prompt-only-interfaces)).
+  A client cannot widen the policy by sending different JSON.
+- **Sampling parameters are not applied to the agent.** `temperature`,
+  `max_tokens`, `system` / `instructions` and earlier turns are passed through to
+  a [script backend](#script-backends) as data; the agent loop ignores them — it
+  runs the prompt as a task with its own configured model.
+- **Tasks share one queue.** Each request is one task in the same serial queue as
+  `POST /tasks`, so a slow request delays the next.
+
+## Streaming
+
+Set `"stream": true` and each protocol streams in its own event shapes, so an
+SDK's streaming helpers work unchanged:
+
+| Protocol | Frames |
+| --- | --- |
+| Chat Completions | `chat.completion.chunk` data frames (role first, then content deltas, then a `finish_reason` chunk), ending with `data: [DONE]` |
+| Responses | named events — `response.created` → `response.output_item.added` → `response.content_part.added` → `response.output_text.delta`… → `response.output_text.done` → `response.content_part.done` → `response.output_item.done` → `response.completed` — each with a monotonic `sequence_number` |
+| Messages | `message_start` → `content_block_start` → `content_block_delta`… → `content_block_stop` → `message_delta` → `message_stop` |
+
+What arrives *between* the first and last frame depends on the backend:
+
+- **The agent loop** produces its answer at the end of the task, so a stream
+  shows the opening frames, keep-alives while the task runs, then the whole
+  answer as one delta. Streaming still helps — the connection stays alive through
+  a long task — but it is not token-by-token.
+- **A script backend** streams whatever it emits with `emit_text(…)`; its
+  `emit_progress(…)` calls become SSE comment frames that keep the connection
+  alive without showing up in the client.
+
+**Errors after the stream has started** are delivered as content: on Chat
+Completions the message is sent as a content delta with
+`finish_reason: "error"`, because many clients drop a data frame that has no
+`choices` and would otherwise show an empty answer. Responses and Messages use
+their protocol's own `error` event.
+
+**Client disconnect.** When a streaming client goes away, a cancellation flag is
+set. A script backend stops at its next tool-call boundary; the agent loop does
+not watch that flag and runs the task to its own end. Give tasks a
+`NEVOFLUX_WALL_CLOCK_SECS` so an abandoned request cannot occupy the queue
+indefinitely.
+
+## Model names and routing
+
+`GET /v1/models` lists the model names this container answers to, and the
+`model` field of a request selects the **backend** that runs it.
+
+**Single-backend mode** (the default — `NEVOFLUX_OPENAI_MODELS` unset):
+
+- The listed name is `NEVOFLUX_HEADLESS_MODEL` (default `nevoflux-script`).
+- **Any model name is accepted** and echoed back, so a client hard-coded to
+  `"model": "gpt-4"` keeps working.
+- Every request runs the agent loop, or the script named by
+  `NEVOFLUX_HEADLESS_SCRIPT` if that is set.
+
+**Multi-backend mode** — map names to scripts:
+
+```bash
+NEVOFLUX_OPENAI_MODELS='google-search=/opt/nevoflux/google-search.py,agent='
+```
+
+- Each `name=path` entry is a model; an **empty path** (`agent=`) means "run the
+  real agent loop", not "fall back to `NEVOFLUX_HEADLESS_SCRIPT`".
+- `GET /v1/models` lists every key, in order.
+- An **unknown name is rejected** with `404 model_not_found` — once names mean
+  something, silently substituting another backend would be worse than an error.
+- An empty `model` selects the first entry.
+
+| Env var | Effect | Default |
+| --- | --- | --- |
+| `NEVOFLUX_OPENAI_MODELS` | `name=/path/script.py,…` routing table; empty path = agent loop | unset (single-backend) |
+| `NEVOFLUX_HEADLESS_MODEL` | Model name advertised in single-backend mode | `nevoflux-script` |
+| `NEVOFLUX_HEADLESS_SCRIPT` | Script for every task in single-backend mode (see [fixed-script mode](/en/docs/deployment/task-api#fixed-script-mode-no-llm)) | unset (agent loop) |
+
+## Script backends
+
+A **script backend** is a Python file, run in the same sandboxed interpreter as
+[fixed-script mode](/en/docs/deployment/task-api#fixed-script-mode-no-llm), that
+answers a chat request itself — typically by driving a web chat UI in the
+container's browser, with no LLM call of its own. The request is translated into
+one script call and the return value back into the protocol's response.
+
+Two entry points; the server looks for `def chat(` in the source and prefers it:
+
+```python
+def chat(request):      # full contract (preferred)
+    emit_progress("opening the page")          # SSE comment, keeps the stream alive
+    nav = browser_navigate(url="https://example.com")
+    md = browser_get_markdown(tab_id=nav["tab_id"])["markdown"]
+    emit_text(md[:200])                         # a streamed content delta
+    return {"content": md[:200]}
+
+def run(task):           # legacy: receives only the prompt string
+    ...
+```
+
+`request` is a dict with, among others, `protocol` (`openai`, `responses` or
+`anthropic`), `model`, `messages` (the full history as plain-text
+`content` plus raw `content_parts`), `task` (the last user message), the
+client's `tools` / `tool_choice`, `stream`, sampling `params`, and
+`metadata.budget_secs` — the wall-clock budget the sandbox will actually
+enforce on this call (the task wall clock minus a 10-second margin).
+
+A script returns exactly one of:
+
+```python
+{"content": "the answer"}
+{"tool_calls": [{"id": "call_1", "name": "read_file", "arguments": {"path": "/tmp/a"}}]}
+{"error": {"message": "...", "type": "server_error", "code": "..."}}
+```
+
+plus optional `finish_reason` and `usage`. `tool_calls` are passed through to
+the client as real tool calls (the gateway stringifies `arguments`), so a chat
+page with no native tool channel can still serve a tool-using client. A legacy
+`run(task)` return value is passed through verbatim — a returned dict becomes
+the whole assistant message as JSON.
+
+How failures map to HTTP (non-streaming):
+
+| Situation | HTTP | type / code |
+| --- | --- | --- |
+| Malformed body, no user message | `400` | `invalid_request_error` |
+| Model not in the routing table | `404` | `model_not_found` |
+| Script raised / sandbox failed | `502` | `server_error` / `script_error` |
+| Script returned `{"error": …}` | `502` | the code the script supplied |
+| Timed out | `504` | `timeout` |
+
+The full contract — request fields, result envelopes of the browser tools,
+polling with a budget, synthesising tool calls on a chat-only page — is in the
+agent repository at `docs/reference/script-backend-contract.md`, with worked
+examples under `docs/reference/script-backends/`.
+
+> **A script backend has the browser, not a policy.** It calls browser tools
+> directly from the sandbox; the per-task `policy` that gates the agent's shell
+> and fs-write tools does not narrow what a script does with the page. Only
+> deploy scripts you have read.
+
+**Signed-in backends.** A script that drives a web app usually needs a logged-in
+base profile. Each task runs on a throwaway clone, so sign in once as a
+**task** (not via `/v1/chat/completions`, which cannot raise the wall clock per
+request) with `save_profile` set, then point later requests at the saved base
+with `NEVOFLUX_TASK_PROFILE`. See
+[Task API → choosing a backend per task](/en/docs/deployment/task-api#choosing-a-backend-per-task).
+
+## Protocol differences worth knowing
+
+- **Anthropic gets its own port flag** (`--anthropic-addr`) rather than riding
+  on `--openai-addr`: its headers (`x-api-key`, `anthropic-version`) and error
+  envelope (`{"type":"error","error":{…}}`) are Anthropic's.
+- **`max_tokens` is accepted but not enforced** on `/v1/messages` — the protocol
+  requires it, but nothing is sampled against it.
+- **Usage.** The `usage` block in these responses is whatever the backend's
+  finish frame carried: a script can set it, and with the agent loop it reads as
+  zeros. The agent loop's real per-turn token accounting (including prompt-cache
+  reads) is on the task record — `GET /tasks/:id`, see
+  [Task API → status / result](/en/docs/deployment/task-api#status--result).
+- **Response ids carry the task id**: `chatcmpl-task-7`, `resp_task-7`,
+  `msg_task-7` all belong to task `task-7`, which you can then inspect with
+  `GET /tasks/task-7`.

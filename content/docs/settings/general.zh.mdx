@@ -1,6 +1,6 @@
 ---
 title: General(常规)
-description: 侧边栏行为、智能体执行模式、数据路径,以及智能体的人设文件。
+description: 侧边栏行为、智能体执行模式、数据路径、语音模型与语音,以及智能体的人设文件。
 ---
 
 **General** 标签页控制侧边栏与智能体的行为,并让你塑造智能体的人设。
@@ -9,7 +9,7 @@ description: 侧边栏行为、智能体执行模式、数据路径,以及智能
 
 | 设置 | 选项 | 作用 |
 | --- | --- | --- |
-| **Sidebar default** | 自动打开 / 仅手动 | 侧边栏是否自动打开 |
+| **Sidebar default** | 默认(记住上次状态)/ 自动打开 / 仅手动 | 侧边栏是否自动打开 |
 | **Agent execution** | 四个档位(见下) | 智能体在不询问的情况下可以做多少事 |
 | **Data storage** | 路径 | 制品与会话数据的存放位置(如 `~/.config/nevoflux/`) |
 
@@ -28,11 +28,16 @@ description: 侧边栏行为、智能体执行模式、数据路径,以及智能
 | **Browser auto + reads** | + 本地文件读取(`read_file`、`list_files`、`glob`、`grep`) | 文件写入、shell,以及其余全部 |
 | **Full auto** | 全部 —— 不再确认 | 无 |
 
-有两点容易猜错:
+有几点容易猜错:
 
 - **导航算作只读。** 打开一个 URL 属于最低档;而与载入后的页面**交互**不属于。
 - **`browser_eval_js` 不算浏览器交互。** 在页面中执行 JavaScript 与 shell、文件写入同属
   最高类别,因此需要 **Full auto** —— 它能做的事远多于一次点击。
+- **切换标签页属于浏览器交互**(自 v0.3.16 起):`browser_activate_tab` 需要
+  **Browser auto**;而读取控制台或已记录的网络请求
+  ([`browser_console_messages`、`browser_network_requests`](/zh/docs/features/browser-automation))
+  属于只读。无论其他权限如何,创建定时任务都需要 **Full auto** —— 见
+  [定时任务](/zh/docs/features/scheduling)。
 
 分类器无法识别的工具 —— 包括新工具、MCP 工具和第三方工具 —— 一律归入同一个最高风险
 类别,因此在 **Full auto** 以下的档位,未知工具永远不会被自动批准。
@@ -43,6 +48,31 @@ description: 侧边栏行为、智能体执行模式、数据路径,以及智能
 
 该档位同时限定了会话能**创建**什么:见
 [循环与执行档位](/zh/docs/features/automation#循环周期性任务)。
+
+## 语音模型与语音
+
+v0.3.15 新增的两个分组,用于设置与智能体对话、并听它回答。一切都在本机运行;工作原理见
+[语音](/zh/docs/features/voice)。
+
+**Speech Models** 按需下载本地语音模型。每一行显示大小和状态,并提供 **Download**、
+**Cancel** 和 **Resume**(中断的下载会从断点继续):
+
+| 行 | 提供的能力 |
+| --- | --- |
+| **Speech input** | 识别你说的话。语音输入需要它(约 240 MB)。 |
+| **Spoken replies** | 朗读回答——仅英文,一个小型兜底音色(约 120 MB)。 |
+| **Chinese replies** | 中文和英文音色;可替代上一行(约 375 MB)。 |
+| **Natural voice** | MOSS-TTS-Nano:中文及另外 19 种语言,音质明显更好,但体积大(约 717 MB)。 |
+
+**Voice** 控制朗读内容:
+
+| 设置 | 默认 | 作用 |
+| --- | --- | --- |
+| *(引擎说明行)* | — | 由哪个引擎朗读(MOSS 或 Kokoro)及原因;**Re-measure** 可清除"太慢"的判定 |
+| **Voice** | — | 使用的音色,来自实际负责朗读的引擎 |
+| **Speak replies** | 关 | 语音输入开启时朗读回答。关闭时回答只以文字显示——语音听写照常可用 |
+| **Use GPU when it helps** | 开 | 允许语音尝试 GPU,仅当它比 CPU 快时才保留。关闭则始终使用 CPU。下次语音启动时生效 |
+| **Voice view** | 关 | 语音开启时用波形取代消息气泡;回答照常生成、保存、可搜索 |
 
 ## 人设("灵魂")文件
 

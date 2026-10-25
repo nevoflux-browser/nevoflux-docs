@@ -11,7 +11,9 @@ local process bundled with the browser.
 
 What leaves your machine: the requests you send to your chosen **LLM provider** go to
 that provider, and any **MCP servers** or **web tools** you use reach their
-respective endpoints.
+respective endpoints. With the [on-device model](/en/docs/configuration/local-models#what-the-localonly-guard-guarantees)
+active, the **LocalOnly guard** keeps model traffic on your machine. If you turn on
+[Jev](/en/docs/configuration/jev#what-jev-sees), see what it is sent.
 
 ## API keys
 
@@ -35,17 +37,69 @@ newly added or third-party tool is never auto-approved below **Full auto**.
 > effect, and resets to **Read-only** rather than becoming **Full auto**.
 
 The tier is also what a [remote-control](/en/docs/features/remote-control) session
-inherits — a paired phone can see the tier but cannot raise it.
+inherits — a paired phone can see the tier but cannot raise it. A paired AI agent
+gets [its own tier per pairing](/en/docs/features/remote-control#pair-an-ai-agent-pair-agent),
+which caps the tasks it delegates.
 
-## Tool and command safety
+Work that runs with nobody watching is held to the tier of the session that
+creates it: [loops](/en/docs/features/automation#loops-recurring-tasks) need
+**Browser auto** or **Full auto** depending on what they run, and creating a
+[schedule](/en/docs/features/scheduling#scheduled-tasks-schedule) needs **Full
+auto** (v0.3.16).
+
+## The tool gate
+
+Since v0.3.16 every tool call the agent makes — from NevoFlux's own agent loop or
+from an ACP/CLI provider calling NevoFlux's tools — passes one ordered gate before
+it runs, in addition to the tier:
+
+1. **Pack site rules** — deny or ask rules that installed or active
+   [packs](/en/docs/packs) contribute for particular sites.
+2. **Pack hooks** — a pack's WebAssembly `on_tool_pre` check, if it ships one.
+3. **The run's tool list** — a loop or scheduled run can only call the tools it was
+   offered.
+
+A refusal anywhere ends the check before anyone is asked, so you are never asked
+about a call that was going to be refused anyway. A rule that would ask, in a run
+nobody is watching, refuses instead. Pack rules can only make things stricter —
+there is no way for a pack to allow what your tier would not.
+
+What the gate does **not** cover:
+
+- An ACP agent's *own* tools (for example Claude Code's shell or file editor) run
+  in that agent's process, so NevoFlux sees only their results. A pack rule that
+  refuses a NevoFlux tool does not stop such an agent reaching the same result with
+  its own tools.
+- Tool calls made inside an [`orchestrate`](/en/docs/features/subagents#orchestration-code-mode)
+  script are not yet routed through it.
+- A site rule judges the URL a call is aimed at *before* it runs. A click that
+  redirects into a restricted site is caught from the next call on, not that one.
+
+## Packs
+
+A [pack](/en/docs/packs) installs skills, tools and a dashboard, and a
+`pack-protocol/0.2` pack can also add site rules, a WebAssembly hook, and the right
+to replace the agent's system prompt while it is active. Before installing, read
+the pack's `pack.toml`: the install preview lists skills, canvas tools (and the
+binaries they run), seed pages, the dashboard and the commands it may send, but
+**does not yet list** site rules, hooks or a prompt-replacement mode. Only install
+packs from sources you trust.
+
+## Canvas
 
 - **Canvas tools** run through a [whitelist](/en/docs/canvas/tool-whitelist): no shell,
   validated parameters, path confinement, output/time limits, and an audit log.
-- **Command auto-approval** is governed by the `[auth]` section of
-  [`config.toml`](/en/docs/configuration), including an allowlist and patterns for
-  sensitive files.
-- **Canvas artifacts** run in a sandboxed iframe, and the bridge between page content
-  and the browser is isolated.
+- **Canvas artifacts** run in a sandboxed iframe, and reach NevoFlux only through
+  the [Canvas bridge](/en/docs/canvas/sdk#what-a-canvas-may-do), which keeps each
+  canvas to its own storage, sessions, shares and tabs, and lets it send only a few
+  read-only daemon commands. A canvas cannot change settings, pairings, accounts,
+  MCP servers or packs.
+
+## Command auto-approval
+
+Command auto-approval is governed by the `[auth]` section of
+[`config.toml`](/en/docs/configuration), including an allowlist and patterns for
+sensitive files.
 
 ## Reporting a vulnerability
 

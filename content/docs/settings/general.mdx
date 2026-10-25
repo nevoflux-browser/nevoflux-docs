@@ -1,6 +1,6 @@
 ---
 title: General
-description: Sidebar behavior, agent execution mode, data path, and the agent's persona files.
+description: Sidebar behavior, agent execution mode, data path, speech models and voice, and the agent's persona files.
 ---
 
 The **General** tab controls how the sidebar and agent behave, and lets you shape
@@ -10,7 +10,7 @@ the agent's persona.
 
 | Setting | Options | What it does |
 | --- | --- | --- |
-| **Sidebar default** | Auto-open / Manual only | Whether the sidebar opens automatically |
+| **Sidebar default** | Default (remember last state) / Auto-open / Manual only | Whether the sidebar opens automatically |
 | **Agent execution** | four tiers (see below) | How much the agent may do without asking |
 | **Data storage** | path | Where artifact and session data are stored (e.g. `~/.config/nevoflux/`) |
 
@@ -30,13 +30,18 @@ plus one more class of tool. Anything a tier does *not* cover still raises a
 | **Browser auto + reads** | + local file reads (`read_file`, `list_files`, `glob`, `grep`) | File writes, shell, everything else |
 | **Full auto** | Everything — no confirmations | Nothing |
 
-Two things that are easy to guess wrong:
+A few things that are easy to guess wrong:
 
 - **Navigation counts as read-only.** Opening a URL is in the bottom tier;
   *interacting* with what loads is not.
 - **`browser_eval_js` is not a browser interaction.** Running JavaScript in a page
   is in the top class with shell and file writes, so it needs **Full auto** — it
   can do far more than a click.
+- **Switching tabs is a browser interaction** (since v0.3.16): `browser_activate_tab`
+  needs **Browser auto**, while reading the console or recorded network requests
+  ([`browser_console_messages`, `browser_network_requests`](/en/docs/features/browser-automation))
+  is read-only. Creating a schedule needs **Full auto**, whatever else is allowed —
+  see [scheduling](/en/docs/features/scheduling).
 
 Tools the classifier doesn't recognize — including new, MCP and third-party ones —
 always fall into that same highest-risk class, so an unknown tool is never
@@ -50,6 +55,32 @@ auto-approved below **Full auto**.
 
 The tier also bounds what a session can *create*: see
 [loops and execution tiers](/en/docs/features/automation#loops-recurring-tasks).
+
+## Speech Models and Voice
+
+New in v0.3.15, two groups set up talking to the agent and hearing it answer. Everything
+runs on this machine; see [Voice](/en/docs/features/voice) for how it works.
+
+**Speech Models** downloads the on-device speech models on request. Each row shows its
+size and state, with **Download**, **Cancel** and **Resume** (an interrupted download
+continues where it stopped):
+
+| Row | What it gives you |
+| --- | --- |
+| **Speech input** | Recognises what you say. Voice input needs this (≈ 240 MB). |
+| **Spoken replies** | Reads answers aloud — English only, a small fallback voice (≈ 120 MB). |
+| **Chinese replies** | Chinese and English voices; replaces the row above (≈ 375 MB). |
+| **Natural voice** | MOSS-TTS-Nano: Chinese and 19 other languages, noticeably better, but large (≈ 717 MB). |
+
+**Voice** controls what is spoken:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| *(engine line)* | — | Which engine will speak (MOSS or Kokoro) and why; **Re-measure** clears a "too slow" verdict |
+| **Voice** | — | The voice to use, from the engine that will actually speak |
+| **Speak replies** | Off | Reads answers out loud while voice input is on. Off, they only appear as text — dictation still works |
+| **Use GPU when it helps** | On | Lets speech try the GPU and keep it only if it is faster than the CPU. Turn off to stay on the CPU. Takes effect next time speech starts |
+| **Voice view** | Off | Replaces message bubbles with a waveform while voice is on; replies are still generated, saved and searchable |
 
 ## Persona ("soul") files
 

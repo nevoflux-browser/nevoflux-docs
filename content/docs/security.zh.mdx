@@ -9,7 +9,9 @@ NevoFlux 以本地优先。你的**会话**、**知识库**(`~/.gbrain/`)、**�
 **API 密钥**都保存在你自己的机器上。智能体作为随浏览器内置的本地进程运行。
 
 会离开你机器的内容:你发送给所选 **LLM 提供商**的请求会到达该提供商;你使用的任何
-**MCP 服务器**或**网络工具**会访问各自的端点。
+**MCP 服务器**或**网络工具**会访问各自的端点。启用[端侧模型](/zh/docs/configuration/local-models#localonly-防护保证了什么)
+时,**LocalOnly 防护**会把模型流量留在你的机器上。若你开启了
+[Jev](/zh/docs/configuration/jev#jev-能看到什么),请了解它会收到哪些内容。
 
 ## API 密钥
 
@@ -31,15 +33,58 @@ NevoFlux 以本地优先。你的**会话**、**知识库**(`~/.gbrain/`)、**�
 > 会重置为 **Read-only**,而不是变成 **Full auto**。
 
 [远程控制](/zh/docs/features/remote-control)会话继承的也是这个档位 —— 配对的手机能看到
-档位,但无法提高它。
+档位,但无法提高它。配对的 AI 智能体则
+[每个配对各有自己的档位](/zh/docs/features/remote-control#配对-ai-智能体pair-agent),它委派
+的任务不能超过该档位。
 
-## 工具与命令安全
+无人值守运行的工作受创建它的会话档位约束:[循环](/zh/docs/features/automation#循环周期性任务)
+视其运行内容需要 **Browser auto** 或 **Full auto**,而创建
+[定时任务](/zh/docs/features/scheduling#定时任务schedule)需要 **Full auto**(v0.3.16)。
+
+## 工具闸门
+
+自 v0.3.16 起,智能体发起的每一次工具调用 —— 无论来自 NevoFlux 自己的智能体循环,还是来自
+调用 NevoFlux 工具的 ACP/CLI 提供商 —— 在运行前除了档位之外,还要依次通过同一道闸门:
+
+1. **Pack 站点规则** —— 已安装或已激活的 [pack](/zh/docs/packs) 针对特定网站提供的拒绝
+   或询问规则。
+2. **Pack 钩子** —— pack 若附带 WebAssembly `on_tool_pre` 检查,则在此运行。
+3. **本次运行的工具列表** —— 循环或定时运行只能调用提供给它的工具。
+
+任一环节拒绝,检查即告结束,不会再询问任何人,因此你不会被问到一个注定要被拒绝的调用。在
+无人值守的运行中,本该询问的规则会直接拒绝。Pack 规则只能让限制更严 —— pack 没有任何办法
+放行你的档位不允许的操作。
+
+这道闸门**不**覆盖的情况:
+
+- ACP 智能体*自己的*工具(例如 Claude Code 的 shell 或文件编辑器)在该智能体的进程中
+  运行,NevoFlux 只能看到结果。拒绝某个 NevoFlux 工具的 pack 规则,挡不住这类智能体用
+  自己的工具达到同样的结果。
+- 在 [`orchestrate`](/zh/docs/features/subagents#编排代码模式) 脚本内部发起的工具调用
+  目前尚未经过这道闸门。
+- 站点规则在调用运行*之前*按其目标 URL 判定。一次点击若跳转进受限网站,要从下一次调用起
+  才会被拦住,而不是这一次。
+
+## Pack
+
+[Pack](/zh/docs/packs) 会安装技能、工具和仪表盘;`pack-protocol/0.2` 的 pack 还能添加
+站点规则、WebAssembly 钩子,以及在激活期间替换智能体系统提示词的权利。安装前请阅读 pack 的
+`pack.toml`:安装预览会列出技能、Canvas 工具(及其运行的二进制)、种子页面、仪表盘及其可
+发送的命令,但**目前还不会列出**站点规则、钩子或提示词替换模式。只安装来源可信的 pack。
+
+## Canvas
 
 - **Canvas 工具**通过[白名单](/zh/docs/canvas/tool-whitelist)运行:无 shell、参数
   校验、路径限制、输出/时间上限,以及审计日志。
-- **命令自动批准**由 [`config.toml`](/zh/docs/configuration) 的 `[auth]` 节管控,
-  包括允许列表和敏感文件匹配模式。
-- **Canvas 制品**运行在沙箱 iframe 中,页面内容与浏览器之间的桥接是隔离的。
+- **Canvas 制品**运行在沙箱 iframe 中,只能通过
+  [Canvas 桥接](/zh/docs/canvas/sdk#canvas-能做什么)访问 NevoFlux。桥接把每个 canvas
+  限制在它自己的存储、会话、分享和标签页之内,并且只允许它发送少数几个只读的守护进程命令。
+  Canvas 无法修改设置、配对、账户、MCP 服务器或 pack。
+
+## 命令自动批准
+
+命令自动批准由 [`config.toml`](/zh/docs/configuration) 的 `[auth]` 节管控,包括允许
+列表和敏感文件匹配模式。
 
 ## 报告漏洞
 

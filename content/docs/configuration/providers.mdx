@@ -29,9 +29,15 @@ NevoFlux supports many LLM providers. Select one in
 | Gemini CLI | `gemini-cli` | `gemini-2.5-pro` | `GEMINI_API_KEY` |
 | Kimi Agent | `kimi-agent` (alias `kimi`) | `kimi-latest` | `MOONSHOT_API_KEY` |
 | OpenClaw | `openclaw` | `default` | `OPENCLAW_API_KEY` |
+| On-device | `local` (aliases `on-device`, `ondevice`) | `qwen3-8b` | — (no key) |
+| Your own | `custom:<id>` | — (you set it) | — (optional key) |
+
+**On-device** (new in v0.3.16) runs a model on your machine and blocks cloud model
+traffic while it is active — see [On-device models](/en/docs/configuration/local-models).
+**Custom providers** (new in v0.3.15) are covered [below](#custom-providers).
 
 > **Provider types.** The AI Models tab groups these as **service** (cloud APIs),
-> **local** (Ollama), **CLI** (`claude-code`, `antigravity`, `kimi-agent` — these run
+> **local** (Ollama; on-device has its own group), **CLI** (`claude-code`, `antigravity`, `kimi-agent` — these run
 > a local command-line agent and manage their own auth), and **agent**
 > (`openclaw`). CLI/agent providers stream their output; a couple of providers
 > (notably **Ollama**) do not support streaming.
@@ -75,6 +81,79 @@ Set `base_url` under a provider to point at a proxy or an OpenAI-compatible serv
 model = "my-model"
 base_url = "https://my-gateway.example.com/v1"
 ```
+
+## Custom providers
+
+New in **v0.3.15**, you can add your own providers — a self-hosted model server (vLLM,
+LM Studio, llama.cpp), a company gateway, or a proxy — alongside the built-in ones. In
+[Settings → AI Models](/en/docs/settings/ai-models#custom-providers), click
+**Add Custom Provider** under **Custom Providers**.
+
+- **API Type** is either **OpenAI-compatible** (`/chat/completions`) or **Anthropic**
+  (`/v1/messages`). A custom provider reuses NevoFlux's existing client for that API;
+  it is not a new integration.
+- **Base URL is required** and is what makes the provider usable. For OpenAI-compatible
+  servers include the version path, e.g. `https://host/v1`; for the Anthropic type use
+  the host, e.g. `https://host`.
+- **The API key is optional.** Local servers often need none.
+- **Context Window** defaults to 128,000 (OpenAI type) or 200,000 (Anthropic type).
+  Set it to your model's real size — the agent uses it to decide when to compress the
+  conversation.
+
+Each provider gets a **stable id** derived from the name when you create it
+(`My vLLM` → `my-vllm`; a name with no Latin letters or digits gets `custom-1`, …).
+Renaming it later changes only the label, so the active-provider setting keeps working.
+It is stored in `config.toml` as:
+
+```toml
+[llm]
+provider = "custom:my-vllm"
+
+[llm.custom.my-vllm]
+display_name = "My vLLM"
+wire = "openai"            # or "anthropic"
+base_url = "http://localhost:8000/v1"
+model = "Qwen/Qwen3-32B"
+# api_key = "..."          # optional
+# context_window = 32768
+# use_streaming = true
+# accent = "#1a73e8"
+```
+
+Deleting the active custom provider switches to another configured provider instead
+of sending you back to setup.
+
+> A custom provider sends your conversation wherever its base URL points. A server on
+> `localhost` keeps it on your machine; anything else is a third party you are
+> choosing to trust.
+
+## Token usage, prompt caching and context limits
+
+**Per-reply usage.** Since v0.3.16 each reply in the sidebar shows a short line such as
+`in 8.3k · out 646 · 42 tok/s`; hover it for the detail — LLM calls, last context
+size, sub-agent share, time to first token, total time and the model. Numbers are the
+ones the provider reported; when a provider reports none, they are estimated and
+marked as such. The figures are saved with the message, so they are still there after a
+reload.
+
+**Prompt caching.** All Anthropic requests now go out with prompt-cache breakpoints
+(on the tool list, the system prompt and the latest message), so the unchanged part of
+a long conversation is billed at the cheaper cache-read rate. On OpenAI-compatible
+APIs that report cache hits (OpenAI's `cached_tokens`, DeepSeek's cache-hit tokens),
+those are now read and recorded. To keep the prompt prefix stable, the agent also
+avoids rewriting old history on every step: aged tool results are shortened in
+batches rather than one by one.
+
+**When the context overflows.** If the provider rejects a request as too long for the
+model's context, the agent retries **once** after shortening the oldest tool results —
+the most recent ones and every message stay in place. If nothing is left to shorten,
+you get the original error.
+
+**Very large tool results** are still truncated before they reach the model, but the
+full text is now written to a file in the agent's data directory
+(`tool-spill/<session>/` — e.g. under `~/.local/share/nevoflux/` on Linux), and the
+model is told where, so it can read the rest if it needs to. Keep in mind that this
+puts a full copy of, say, a long page or file on disk.
 
 ## Switching the active model
 

@@ -10,7 +10,7 @@ for **amd64 and arm64**, so an Apple Silicon or Graviton host pulls a native
 image:
 
 ```bash
-docker pull nevoflux/agent:0.3.13     # a specific release
+docker pull nevoflux/agent:0.3.16     # a specific release
 docker pull nevoflux/agent:latest     # the newest published release
 ```
 
@@ -19,7 +19,7 @@ alongside it, and is only pushed **after** that release goes public — so a tag
 that exists always corresponds to a release you can download.
 
 > **Pin the version in production.** `latest` moves under you at the next
-> release; `0.3.13` does not.
+> release; `0.3.16` does not.
 
 ## Build it yourself
 
@@ -36,8 +36,8 @@ docker build -t nevoflux/agent:custom deploy/headless      # amd64 or arm64
 
 | Arg | Default | Meaning |
 | --- | --- | --- |
-| `AGENT_VERSION` | `latest` | Agent release tag — **with** a leading `v` (e.g. `v0.3.13`). |
-| `BROWSER_VERSION` | `latest` | Browser release tag — **no** leading `v` (e.g. `0.3.13`). |
+| `AGENT_VERSION` | `latest` | Agent release tag — **with** a leading `v` (e.g. `v0.3.16`). |
+| `BROWSER_VERSION` | `latest` | Browser release tag — **no** leading `v` (e.g. `0.3.16`). |
 | `TARGETARCH` | host arch | `amd64` → `x86_64` assets, `arm64` → `aarch64`. Set by `docker buildx --platform`. |
 | `PACK_REPOS` | empty | Space-separated packs to bundle (see [Bundling packs](#bundling-packs)). |
 | `INSTALL_GBRAIN` | `1` | Install + enable the GBrain knowledge base (`0` to skip entirely). |
@@ -48,8 +48,8 @@ docker build -t nevoflux/agent:custom deploy/headless      # amd64 or arm64
 > browser and is **not reproducible**. Pin both:
 >
 > ```bash
-> docker build -t nevoflux/agent:0.3.13-custom \
->   --build-arg AGENT_VERSION=v0.3.13 --build-arg BROWSER_VERSION=0.3.13 \
+> docker build -t nevoflux/agent:0.3.16-custom \
+>   --build-arg AGENT_VERSION=v0.3.16 --build-arg BROWSER_VERSION=0.3.16 \
 >   deploy/headless
 > ```
 
@@ -138,14 +138,51 @@ docker run --rm -p 8080:8080 \
   nevoflux/agent:latest
 ```
 
-- `/work` is where each task's `result.json` + `debug-bundle/` + artifacts are drained.
+- `/work` is the image's working directory and a declared volume. Note that task
+  results (`result.json`, `debug-bundle/`, artifacts) are written to the task
+  workspace under `NEVOFLUX_PROFILE_WORK`, which the image leaves at its default
+  `/tmp/nevoflux-profiles` — see
+  [Task API → status / result](/en/docs/deployment/task-api#status--result).
 - `base-profiles` (read-only) holds pre-authenticated login templates, cloned per task.
 - The container runs read-only; the daemon writes only to the tmpfs mounts above.
+- Since v0.3.14 the image declares `/var/nevoflux/data` as a `VOLUME` as well
+  (the [remote-control head](/en/docs/deployment/remote-control) needs it
+  persistent). For the task service keep mounting it as a tmpfs, as above —
+  otherwise `docker run` creates an anonymous volume for it.
 
-The default command is `--daemon --headless --http-addr 0.0.0.0:8080`, which also
-serves the OpenAI-compatible `/v1/chat/completions` on the same port. To split
-OpenAI / MCP / ACP onto their own ports, override the command — see
-[Task API & interfaces](/en/docs/deployment/task-api#alternative-interfaces).
+The default command is `--daemon --headless --http-addr 0.0.0.0:8080`. That one
+port serves the task API **and** the OpenAI (Chat Completions, Responses,
+models), Anthropic Messages and A2A endpoints — all unauthenticated unless you set
+`NEVOFLUX_A2A_TOKEN`, which covers only the A2A routes. Publish it only where
+every caller is trusted. To add MCP, ACP, the admin API or dedicated ports,
+override the command — see
+[Task API → interfaces and ports](/en/docs/deployment/task-api#interfaces-and-ports).
+
+## Browser engine (amd64 vs arm64)
+
+Since **v0.3.15** the `linux/amd64` release binary — and therefore the amd64
+image — is built with an **in-process browser engine** (nevoflux-skiff) and uses
+it by default: browser tools are served in the daemon process first, and a task
+escalates to the real headless browser only when the engine cannot do what was
+asked. The `linux/arm64` binary is built without it and always uses the real
+browser.
+
+`NEVOFLUX_BROWSER_BACKEND` chooses explicitly:
+
+| Value | Engine |
+| --- | --- |
+| unset / `auto` | In-process engine first, real browser on escalation (amd64 default) |
+| `browser` (or `nevoflux`) | The real headless browser, without trying the in-process engine |
+| `extension` | The browser extension path, as before v0.3.15 (arm64 default) |
+| `skiff` | In-process engine only — what it cannot do fails (for measuring coverage) |
+
+A value the build cannot honour (e.g. `skiff` on arm64) or a misspelling is
+logged as an error and falls back to `extension`. Practical consequences of the
+in-process engine: a task it serves launches no browser, so there is nothing to
+watch over [VNC](#live-view-vnc--novnc); and MCP lists `browser_*` tools without
+[session mode](/en/docs/deployment/mcp-endpoint#built-in-browser-tools-need-session-mode).
+Set `NEVOFLUX_BROWSER_BACKEND=browser` if you need the same behaviour on both
+architectures.
 
 ## Live view (VNC / noVNC)
 
@@ -185,10 +222,19 @@ These are baked into the image (you rarely change them):
 | `HF_HUB_OFFLINE` | `1` | Embeddings run offline (model is bundled). |
 | `MOZ_DISABLE_CONTENT_SANDBOX` | `1` | Required for the browser inside the container. |
 
+Runtime switches you may set yourself:
+
+| Env | Effect |
+| --- | --- |
+| `NEVOFLUX_BRAIN_ENABLED` | *(v0.3.14)* `0` / `false` / `no` turns GBrain off for this container without rebuilding: the entrypoint skips the brain init (which can otherwise wait up to 40 s at startup), the daemon does not start `gbrain serve`, and the brain tools are not offered to the agent. `1` / `true` / `yes` forces it on; unset follows `config.toml`. |
+| `NEVOFLUX_CONFIG` | *(v0.3.16)* Path of the `config.toml` to use instead of `~/.config/nevoflux/config.toml` — e.g. a read-only mount at `/etc/nevoflux/config.toml`. Empty counts as unset. |
+| `NEVOFLUX_PROFILE_WORK` | Where per-task profile clones and task workspaces go (default `/tmp/nevoflux-profiles`). |
+| `NEVOFLUX_BROWSER_BACKEND` | Browser engine — see [above](#browser-engine-amd64-vs-arm64). |
+
 ## Startup sequence
 
 The entrypoint (under `tini`) runs: **dbus** → **Xvfb** → *(optional VNC)* →
-**GBrain init** → **daemon**. In daemon mode it starts the daemon in the
+**GBrain init** (skipped when `NEVOFLUX_BRAIN_ENABLED` is off) → **daemon**. In daemon mode it starts the daemon in the
 background, installs any bundled packs once the daemon is listening, then hands
 over (forwarding `SIGTERM`/`SIGINT` for a clean shutdown). Non-daemon invocations
 (e.g. `config`, `pack`) run directly.

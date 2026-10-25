@@ -48,7 +48,7 @@ const { callId } = await NevofluxSDK.tool.invoke(
 );
 
 // 4) 响应 NevoFlux 其他位置发来的事件
-const sub = NevofluxSDK.events.subscribe(["session:*"], (evt) => {
+const sub = NevofluxSDK.events.subscribe(["ui:*"], (evt) => {
   console.log("event", evt);
 });
 // 用完后 sub.unsubscribe()
@@ -56,3 +56,38 @@ const sub = NevofluxSDK.events.subscribe(["session:*"], (evt) => {
 
 > `tool.invoke` 能运行哪些工具由[工具白名单](/zh/docs/canvas/tool-whitelist)控制。
 > 对已禁用或未列入的工具的调用会被拒绝。
+
+## Canvas 能做什么
+
+Canvas 运行在隔离的 iframe 中,因此 **Canvas 桥接(Canvas bridge)** —— `NevofluxSDK`
+的宿主一侧 —— 是它接触任何特权能力的唯一途径。自 NevoFlux 0.3.16 起,桥接把每个 canvas
+限制在属于它自己的范围内。依赖早期版本较宽松行为的代码可能需要调整:
+
+| 方面 | 规则 |
+| --- | --- |
+| `storage` | 归该 canvas 私有:键存放在该 canvas 自己的命名空间里,两个 canvas 永远看不到彼此的数据,`query('')` 只列出本 canvas 的键。0.3.16 之前写入的键会在首次读取时迁入命名空间,但以 `config:`、`canvas:`、`session:` 或 `app:` 开头的键除外。 |
+| `agent.chat` / `agent.cancel` | Canvas 只能继续或取消它自己发起的会话。只有图片附件(`{ name, mime_type, data }`)会被附上;`{ path }` 附件改为在消息中写出路径,由智能体决定是否用文件工具读取 —— 受你的 [Agent execution 档位](/zh/docs/settings/general#agent-execution-权限档位)约束。 |
+| `agent.sendCommand` | 你或智能体创建的 canvas 只能发送 `daemon.info`、`skill.list`,以及针对其自身制品的 `artifact.get`。[Pack](/zh/docs/packs) 仪表盘只能发送其 manifest 声明过的命令。设置、配对、账户、原始存储、MCP 服务器和 pack 安装类命令对任何 canvas 都不可用。 |
+| `callTool` | 会改变页面的操作(点击、输入……)只能在 canvas 自己打开的标签页中执行 —— 用 `navigate` 加 `new_tab: true` 打开一个。读取类操作可用于任意标签页。 |
+| `sidebar.send` | 仅限文本,最多 4,000 个字符,在聊天中显示时带有该 canvas 的 id 标签。 |
+| `sidebar.notify` | 一条以该 canvas 名称为标题的系统通知,每个 canvas 每 30 秒最多三条。 |
+| `events.publish` | 以 `ui:notification`、`ui:soul`、`ui:render` 或 `ui:tab` 开头的主题归浏览器所有,发布会被拒绝。 |
+| `share` | `share()` 总是分享调用它的 canvas;`list()` 只显示它自己的分享,`extend` / `delete` 也只对这些分享有效。 |
+
+被拒绝的调用会以错误拒绝其 promise,错误消息以 `FORBIDDEN_COMMAND:`、
+`COMMAND_NOT_AVAILABLE:` 或 `NOT_OWN_SESSION:` 这样的代码开头,方便你的代码区分策略拒绝
+与普通失败。
+
+### `callTool` 的策略检查
+
+Canvas 的 `callTool` 运行前,浏览器会询问智能体的策略(`canvas.policy_check`)是否允许,
+所用的正是智能体自身调用要经过的那套
+[pack 站点规则](/zh/docs/packs/development#站点规则--componentstool_policy):
+
+- 本该**询问**的规则会改为拒绝 —— canvas 无法在调用中途弹出确认对话框。
+- 面向 `pack-protocol/0.2` 构建的 pack 仪表盘只能使用其 manifest 中声明过的操作。
+- 若无法连上智能体,**读取操作照常可用,其余一律拒绝**,因此停掉智能体并不能绕过 pack
+  的规则。
+
+这项检查和标签页归属规则都由浏览器在操作运行前强制执行,而非由 canvas 自身执行,因此
+canvas 代码无法跳过它们。

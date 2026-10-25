@@ -1,34 +1,42 @@
 ---
 title: Headless (Docker)
-description: Run NevoFlux Agent as a containerized service — a headless browser driven by an HTTP task API, with no GUI. Added in agent v0.3.10.
+description: Run NevoFlux Agent as a containerized service — a headless browser driven over HTTP (task API, OpenAI / Anthropic-compatible APIs, MCP, A2A) or from a phone, with no GUI. Added in agent v0.3.10; updated for v0.3.16.
 ---
 
 NevoFlux Agent can run **headless**, inside a container, with no desktop. The
 official **`nevoflux/agent`** image packages the daemon, a headless browser, and
-the built-in knowledge base, and serves an HTTP **task API**. You submit a natural-
-language task; the agent drives a real browser (automation + computer use +
-shell/fs tools) and returns the result.
+the built-in knowledge base. You hand it a natural-language task; the agent drives
+a real browser (automation + computer use + shell/fs tools) and returns the result.
 
 > **"Headless" is the *deployment* mode, not a reduced feature set.** A headless
 > task can do everything a desktop session can — browse, use tools, run skills, and
 > read/write the knowledge base. The only difference is there is no visible window.
 
 This section arrived in **nevoflux-agent v0.3.10**. Since **v0.3.13** the image is
-**published to Docker Hub** on every release, so you no longer have to build it
-yourself. It covers:
+**published to Docker Hub** on every release. Since then the container has grown
+several ways in:
 
-- **[Docker image](/en/docs/deployment/docker)** — pull or build it, its build args, run modes, and live-view (VNC).
+| Way in | What it is | Since |
+| --- | --- | --- |
+| [Task API](/en/docs/deployment/task-api) | `POST /tasks`, status, SSE events, follow-up turns, per-turn usage | v0.3.10 |
+| [OpenAI & Anthropic APIs](/en/docs/deployment/llm-apis) | Chat Completions (streaming), Responses, Messages, `/v1/models`; per-model script backends | v0.3.14 / v0.3.16 |
+| [MCP endpoint & admin API](/en/docs/deployment/mcp-endpoint) | Built-in browser / computer tools, Python script tools, token-protected deploy API | v0.3.14 |
+| [A2A](/en/docs/deployment/a2a) | Agent2Agent v0.3 and v1.0 — be called by other agents, and call them | v0.3.16 |
+| [Remote control (container)](/en/docs/deployment/remote-control) | Drive the container from a phone; no HTTP at all | v0.3.14 |
+
+And the packaging:
+
+- **[Docker image](/en/docs/deployment/docker)** — pull or build it, its build args, run modes, browser engine, and live-view (VNC).
 - **[Docker Compose](/en/docs/deployment/docker-compose)** — the shipped `docker-compose.yml`, fully annotated.
-- **[Task API & interfaces](/en/docs/deployment/task-api)** — the HTTP task API, the OpenAI / MCP / ACP front-ends, session mode, fixed-script mode, and the full env-var / flag reference.
 
 ## Quick start
 
 ```bash
 # 1. pull the official image (amd64 + arm64; published since v0.3.13)
-docker pull nevoflux/agent:0.3.13          # or :latest
+docker pull nevoflux/agent:0.3.16          # or :latest
 
 # 2. run the long-running service (needs your provider key at runtime)
-docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:0.3.13
+docker run --rm -p 8080:8080 -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" nevoflux/agent:0.3.16
 
 # 3. submit a browser task
 curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
@@ -37,6 +45,10 @@ curl -s localhost:8080/tasks -H 'Content-Type: application/json' \
 curl -s localhost:8080/tasks/task-0
 # → {"id":"task-0","status":"succeeded","output":"The title is Example Domain.", ...}
 ```
+
+The same port also answers OpenAI and Anthropic SDKs and A2A clients — with **no
+authentication** on any of them, so publish it only to callers you trust (see
+[Two run models](#two-run-models--pick-by-trust)).
 
 Need a custom build (extra packs, a pinned agent/browser pair, unreleased
 binaries)? See [Docker image → Build it yourself](/en/docs/deployment/docker#build-it-yourself).
@@ -49,9 +61,9 @@ packages the same run with all the hardening flags pre-applied.
 | Component | Detail |
 | --- | --- |
 | **Daemon** | `nevoflux-agent` (downloaded from the agent release), the core processing server |
-| **Browser** | the headless Gecko build (downloaded from the browser release) |
+| **Browser** | the headless Gecko build (downloaded from the browser release); on amd64, an [in-process engine](/en/docs/deployment/docker#browser-engine-amd64-vs-arm64) serves browser tools first since v0.3.15 |
 | **Display** | `Xvfb` virtual X display (`:99`) — the Linux browser needs a display |
-| **Knowledge base** | **GBrain** installed and enabled by default (see [Knowledge Base](/en/docs/knowledge-base)) |
+| **Knowledge base** | **GBrain** installed and enabled by default (see [Knowledge Base](/en/docs/knowledge-base)); `NEVOFLUX_BRAIN_ENABLED=0` turns it off at run time |
 | **Base image** | `debian:bookworm-slim`, runs as a **non-root** user (`nevo`, uid 10001), `tini` as PID 1 |
 | **Embeddings** | ONNX Runtime + the `e5` model bundled — search runs fully offline (`HF_HUB_OFFLINE=1`) |
 
@@ -76,14 +88,15 @@ The **hard boundary** is set outside the app:
 
 - **Network egress policy** — allowlist the LLM API + your task domains (an egress proxy or a firewalled network / k8s `NetworkPolicy`).
 - **No host credential mounts** — mount only `/work` (results) and read-only base-profiles. Prefer injecting the API key via a front proxy so a prompt-injected agent can't read it from the environment.
+- **Who can reach the ports.** The task API, the OpenAI / Anthropic endpoints and `/mcp` have no authentication; A2A has an optional bearer token; only the admin API requires one. Treat network reachability as the access control.
 
 In-process defenses (per-task tool allowlist, fs-sandbox, `SENSITIVE_PATHS`,
 domain checks) are defense-in-depth **layers**, not the boundary.
 
-> **Status of the one-shot path — still open as of v0.3.13.** The shipped deploy
+> **Status of the one-shot path — still open as of v0.3.16.** The shipped deploy
 > assets include an `oneshot` Compose service and a `run --task …` one-shot form,
-> but that CLI subcommand is **not wired into the agent binary yet** (checked
-> against v0.3.13) — only the `--daemon --headless` service mode is. Until it
+> but that CLI subcommand is **not wired into the agent binary yet** (re-checked
+> against v0.3.16) — only the `--daemon --headless` service mode is. Until it
 > lands, get true per-task isolation by running a **fresh service container per
 > task** (start it, submit one task, tear the container down), or use
 > [session mode](/en/docs/deployment/task-api#session-mode) with `end_session` for

@@ -29,9 +29,15 @@ NevoFlux 支持众多 LLM 提供商。在
 | Gemini CLI | `gemini-cli` | `gemini-2.5-pro` | `GEMINI_API_KEY` |
 | Kimi Agent | `kimi-agent`(别名 `kimi`) | `kimi-latest` | `MOONSHOT_API_KEY` |
 | OpenClaw | `openclaw` | `default` | `OPENCLAW_API_KEY` |
+| 本地推理(On-device) | `local`(别名 `on-device`、`ondevice`) | `qwen3-8b` | ——(无需密钥) |
+| 你自己的提供商 | `custom:<id>` | ——(由你设置) | ——(密钥可选) |
+
+**本地推理**(v0.3.16 新增)在你的机器上运行模型,并在启用期间阻止发往云端的模型
+流量——见[本地模型](/zh/docs/configuration/local-models)。**自定义提供商**(v0.3.15
+新增)见[下文](#自定义提供商)。
 
 > **提供商类型。** AI Models 标签页将它们分为 **service**(云端 API)、
-> **local**(Ollama)、**CLI**(`claude-code`、`antigravity`、`kimi-agent` —— 运行本地
+> **local**(Ollama;本地推理有单独的分组)、**CLI**(`claude-code`、`antigravity`、`kimi-agent` —— 运行本地
 > 命令行智能体,自行管理鉴权)和 **agent**(`openclaw`)。CLI/agent 类提供商以流式
 > 输出;少数提供商(尤其是 **Ollama**)不支持流式。
 
@@ -72,6 +78,66 @@ NevoFlux 支持众多 LLM 提供商。在
 model = "my-model"
 base_url = "https://my-gateway.example.com/v1"
 ```
+
+## 自定义提供商
+
+**v0.3.15 新增**:除内置提供商外,你还可以添加自己的提供商——自建的模型服务(vLLM、
+LM Studio、llama.cpp)、公司网关或代理。在[设置 → AI Models](/zh/docs/settings/ai-models#自定义提供商)
+的 **Custom Providers** 下点击 **Add Custom Provider**。
+
+- **API Type** 可选 **OpenAI-compatible**(`/chat/completions`)或 **Anthropic**
+  (`/v1/messages`)。自定义提供商复用 NevoFlux 对该 API 的现有客户端,并不是一套新的
+  集成。
+- **Base URL 必填**,它决定了该提供商是否可用。OpenAI 兼容服务请包含版本路径,如
+  `https://host/v1`;Anthropic 类型填主机地址即可,如 `https://host`。
+- **API 密钥可选。** 本地服务通常不需要。
+- **Context Window** 默认 128,000(OpenAI 类型)或 200,000(Anthropic 类型)。请设为
+  模型的实际大小——智能体据此决定何时压缩对话。
+
+每个提供商在创建时会根据名称生成一个**稳定 id**(`My vLLM` → `my-vllm`;名称中没有
+拉丁字母或数字时为 `custom-1` 等)。之后改名只会改变显示名称,当前提供商设置仍然有效。
+它在 `config.toml` 中保存为:
+
+```toml
+[llm]
+provider = "custom:my-vllm"
+
+[llm.custom.my-vllm]
+display_name = "My vLLM"
+wire = "openai"            # 或 "anthropic"
+base_url = "http://localhost:8000/v1"
+model = "Qwen/Qwen3-32B"
+# api_key = "..."          # 可选
+# context_window = 32768
+# use_streaming = true
+# accent = "#1a73e8"
+```
+
+删除当前使用的自定义提供商时,会切换到另一个已配置的提供商,而不是把你送回初始设置。
+
+> 自定义提供商会把你的对话发送到其 Base URL 所指向的地方。`localhost` 上的服务让数据
+> 留在本机;其他地址则是你选择信任的第三方。
+
+## Token 用量、提示词缓存与上下文上限
+
+**每条回复的用量。** 从 v0.3.16 起,侧边栏中每条回复下都会显示一行简短信息,如
+`in 8.3k · out 646 · 42 tok/s`;将鼠标悬停其上可查看详情——LLM 调用次数、最近一次的
+上下文大小、子智能体占比、首 token 时间、总耗时和模型。数字以提供商报告的为准;提供商
+未报告时为估算值,并会注明。这些数据随消息一起保存,重新加载后仍在。
+
+**提示词缓存。** 所有 Anthropic 请求现在都带有提示词缓存断点(位于工具列表、系统提示词
+和最新一条消息处),长对话中未改变的部分按更便宜的缓存读取价格计费。对于会报告缓存命中
+的 OpenAI 兼容 API(OpenAI 的 `cached_tokens`、DeepSeek 的缓存命中 token),这些数据现在
+也会被读取并记录。为保持提示词前缀稳定,智能体也不再每一步都改写旧历史:过旧的工具
+结果会分批缩短,而不是逐条缩短。
+
+**上下文溢出时。** 如果提供商以超出模型上下文为由拒绝请求,智能体会在缩短最早的工具
+结果后**重试一次**——最近的工具结果和所有消息都保持不变。若已无可缩短的内容,你会看到
+原始错误。
+
+**超大的工具结果**在交给模型前仍会被截断,但完整文本现在会写入智能体数据目录下的文件
+(`tool-spill/<session>/`——Linux 上如 `~/.local/share/nevoflux/` 下),并告诉模型文件
+位置,需要时它可以读取其余部分。请注意,这意味着长页面或大文件的完整副本会落在磁盘上。
 
 ## 切换当前模型
 

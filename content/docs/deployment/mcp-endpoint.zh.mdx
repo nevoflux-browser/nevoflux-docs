@@ -1,0 +1,219 @@
+---
+title: MCP 端点与管理 API
+description: 无头 MCP-over-HTTP 端点——内置浏览器与计算机工具、用 Python 脚本编写的自定义工具、重新加载与 list_changed——以及用于部署脚本和 base 配置、受令牌保护的管理 API。
+---
+
+使用 `--mcp-addr` 后，无头容器就是一个可通过 HTTP 访问的 **MCP 服务器**。自 **v0.3.14**
+起，它基于官方 Rust MCP SDK（rmcp）与 **Streamable HTTP** 传输运行，提供的内容也远多于
+最初那一个 `run_browser_task` 工具：守护进程自带的浏览器与计算机工具、你用 Python 脚本
+编写的自定义工具，以及一对用于重新加载它们的元工具。
+
+```bash
+nevoflux-agent --daemon --headless --http-addr 0.0.0.0:8080 --mcp-addr 0.0.0.0:8082
+# MCP 端点：http://<host>:8082/mcp
+```
+
+`/mcp` **只**在 `--mcp-addr` 上提供——不在主端口 `--http-addr` 上。
+
+> 不要与 **`--mcp`**（不带 `--daemon`）混淆，后者是用于
+> [Claude Code 集成](/zh/docs/features/mcp)的 stdio MCP 服务器。本页讲的是无头 HTTP 端点。
+
+## 连接客户端
+
+使用任何支持 Streamable HTTP 的 MCP 客户端，指向 `/mcp` 即可。协议版本协商与会话管理由
+SDK 负责，因此单发一个 `tools/call` 的简单 `curl` 已经行不通——客户端必须先
+`initialize`，并发送 `Accept: application/json, text/event-stream`。以 Claude Code 为例：
+
+```bash
+claude mcp add --transport http nevoflux-headless http://box.internal:8082/mcp
+```
+
+### 允许的主机名
+
+传输层会校验 `Host` 请求头（防 DNS 重绑定），默认只响应 `localhost`、`127.0.0.1` 与
+`::1`。另一台机器上的客户端会把服务器自己的地址作为 `Host` 发送，无论网络怎么配都会得到
+`403`。请把客户端使用的名字加进来：
+
+```bash
+NEVOFLUX_MCP_ALLOWED_HOSTS=box.internal,10.0.0.5:8082
+```
+
+条目以逗号分隔，可带端口，并且是**追加**到回环名字之上，而不是替换它们。
+
+> **`/mcp` 没有认证。** 允许某个主机名并不会认证任何人，只是让端点不再拒绝合法的远程
+> 客户端。任何能访问该端口的人都能调用下面所有工具。请把它放在私有网络中，或放在带认证的
+> 代理之后。
+
+## 提供哪些工具
+
+工具来自四个来源。若两个来源提供同名工具，按下表顺序靠前的胜出，靠后的会从列表中移除，
+因此列出的与能调用的始终一致。
+
+| 来源 | 工具 | 说明 |
+| --- | --- | --- |
+| **任务** | `run_browser_task` | 通过队列运行一个完整的自然语言任务（参数 `task`）并返回结果。mode / profile / policy 取自 `NEVOFLUX_TASK_*` / `NEVOFLUX_POLICY_*` 环境默认值。最多等待 600 秒。 |
+| **内置** | `browser_*`、`computer_*` | 守护进程自己的工具，直接执行。只列出执行器真正能运行的工具。 |
+| **脚本** | `<script>__<tool>` | 来自 Python 文件的自定义工具——见[脚本工具](#脚本工具)。 |
+| **元工具** | `nevoflux__reload`、`nevoflux__list_scripts` | 重新加载脚本工具或会话浏览器；列出已加载与被跳过的内容。 |
+
+### 内置浏览器工具需要会话模式
+
+`browser_*` 工具作用于一个必须在多次调用之间存活的浏览器。不设置
+`NEVOFLUX_SESSION_MODE=1` 时，每个任务都有自己短命的浏览器，因此这些工具**根本不会被
+列出**，而不是列出来却注定失败。开启会话模式后，守护进程会在启动时**预热**共享浏览器，
+这样第一次工具调用就不必等待冷启动的浏览器，也不会因此失败。
+
+例外是浏览器工具由**进程内引擎**提供的守护进程（自 v0.3.15 起 `linux/amd64` 镜像的默认
+行为——见 [Docker 镜像 → 浏览器引擎](/zh/docs/deployment/docker#浏览器引擎)）：该引擎天然
+跨调用存活，因此无需会话模式也会列出 `browser_*`，且不会预热浏览器。
+
+列出的浏览器工具为 `browser_navigate`、`browser_click`、`browser_screenshot`、
+`browser_type`、`browser_fill`、`browser_get_content`、`browser_eval_js`、
+`browser_wait_for`、`browser_scroll`、`browser_get_element`、`browser_query_all`、
+`browser_get_elements`、`browser_click_by_id`、`browser_fill_by_id`、
+`browser_type_by_id` 与 `browser_get_markdown`。`computer_*` 工具（在容器虚拟显示上截图、
+操作鼠标与键盘）无论是否开启会话模式都会列出。
+
+`run_browser_task` 运行在**容器的**浏览器中，而不是 MCP 客户端自己正在驱动的那个浏览器
+——它看不到那个客户端的标签页或会话。
+
+> **直接调用的工具绕过任务策略。** 每任务 `policy`（`allow_shell`、`allow_upload`、
+> `domain_allowlist`……）约束的是任务*内* agent 的行为。通过 `/mcp` 调用的内置工具不是任务，
+> 因此该策略不适用——`browser_eval_js` 会在页面中执行任意 JavaScript，`computer_*` 会操控
+> 显示。能限制这一点的只有容器边界以及该端口的可达范围。
+
+## 脚本工具
+
+自定义工具是放在 `NEVOFLUX_MCP_TOOLS` 所列目录中的 Python 文件（路径列表——Linux 上以
+`:` 分隔）。未设置时没有任何脚本工具，这也是默认值。
+
+```python
+# /opt/nevoflux/tools/jira.py  →  工具 jira__search、jira__create
+def describe():
+    return [
+        {"name": "search",
+         "description": "Search the issue tracker",
+         "inputSchema": {"type": "object",
+                         "properties": {"query": {"type": "string"}},
+                         "required": ["query"]}},
+        {"name": "create", "description": "Open an issue"},
+    ]
+
+def search(arguments):
+    nav = browser_navigate(url="https://tracker.example/search?q=" + arguments["query"])
+    return browser_get_markdown(tab_id=nav["tab_id"])["markdown"]
+
+def create(arguments):
+    ...
+```
+
+- **`describe()`** 返回一个声明（dict）或声明列表，每个包含 `name`、可选的 `description`
+  与可选的 `inputSchema`（默认是空的 object schema）。它**只在加载时**运行，限时 5 秒——
+  `tools/list` 时绝不执行。
+- **文件名主干就是命名空间**：`jira.py` 导出的 `search` 变成 `jira__search`，所以脚本永远
+  无法遮蔽内置名字。主干必须匹配 `^[a-z][a-z0-9_]{0,31}$`；若两个目录中有同名主干，靠前的
+  目录胜出。
+- **调用时**执行与工具同名的函数，参数作为一个 dict 传入。脚本也可以只定义一个
+  `call(name, arguments)` 分发函数。返回字符串则原样作为结果；其他值序列化为 JSON。
+- 脚本运行在与[固定脚本模式](/zh/docs/deployment/task-api#固定脚本模式)相同的**沙箱解释器**
+  （Monty）中，连接了浏览器时可使用浏览器工具——实际上就是需要
+  `NEVOFLUX_SESSION_MODE=1`。没有浏览器时，调用浏览器工具的脚本会失败，并给出说明原因的
+  错误。
+- **不会静默丢弃任何东西。** 加载失败的文件（名字不合法、缺少 `describe()`、声明缺少
+  `name`、schema 不是 object……）会连同原因出现在日志、`nevoflux__list_scripts` 以及
+  `GET /admin/scripts` 中。
+
+### 重新加载与 `list_changed`
+
+脚本在启动时扫描一次。要让改动生效：
+
+- 调用 MCP 工具 **`nevoflux__reload`**——`target` 为 `scripts`（默认）、`profile` 或
+  `all`；`name` 把脚本重载限定到某个文件主干。`profile` 目标会丢弃被复用的会话浏览器，
+  使下一个任务重新克隆其 base 配置。
+- 或使用[管理 API](#管理-api)。
+
+服务器声明了 `tools.listChanged`。当一次 `nevoflux__reload` 调用改变了工具数量时，它会向
+该客户端发送 `notifications/tools/list_changed`，让其重新获取列表。通过管理 API 做出的改动
+不会通知已连接的客户端；它们下次调用 `tools/list` 时才会看到新列表。
+
+如果重载时所有脚本目录都变得不可读，会保留之前的工具集并报告错误，而不是清空整个目录。
+
+## 管理 API
+
+**写入面**——部署脚本与 base 配置——是独立的、受令牌保护的接口，有自己的端口，因此你可以
+把它绑定到 localhost 或私有网络，而 `/mcp` 与任务 API 对外开放。
+
+```bash
+NEVOFLUX_ADMIN_TOKEN=$(openssl rand -hex 32) \
+nevoflux-agent --daemon --headless --http-addr 0.0.0.0:8080 \
+  --mcp-addr 0.0.0.0:8082 --admin-addr 127.0.0.1:8086
+```
+
+> **没有令牌就没有管理 API。** 若给了 `--admin-addr` 却没有 `NEVOFLUX_ADMIN_TOKEN`，这些
+> 路由根本不会挂载，并会记录一条警告——一个无需认证就能向服务器写入可执行代码的端点，比
+> 没有端点更糟。每个请求都需要 `Authorization: Bearer <token>`（常数时间比较）。
+
+### 脚本
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/admin/scripts` | 目录、已加载工具（名字 + 源文件）、被跳过的文件及原因。 |
+| `GET` | `/admin/scripts/:name` | 原样返回已部署的 `<name>.py` 源码。 |
+| `PUT` | `/admin/scripts/:name` | 把请求体写成**第一个** `NEVOFLUX_MCP_TOOLS` 目录中的 `<name>.py`（原子重命名），重载，并返回该脚本的 `{name, tools, skipped}`。未设置 `NEVOFLUX_MCP_TOOLS` 时返回 `409`。 |
+| `POST` | `/admin/scripts/:name/validate` | 对请求体运行 `describe()` 但**不部署**；响应形状与 `PUT` 相同。脚本有问题时返回 `200` 并附原因，而不是 `4xx`。 |
+| `DELETE` | `/admin/scripts/:name` | 删除文件并重载。 |
+| `POST` | `/admin/reload` | `{"target":"scripts"\|"profile"\|"all","name":…}`——与 MCP 工具相同的重载，供运维与 CI 使用。 |
+
+```bash
+H="Authorization: Bearer $NEVOFLUX_ADMIN_TOKEN"
+curl -s -H "$H" -X POST --data-binary @jira.py localhost:8086/admin/scripts/jira/validate
+curl -s -H "$H" -X PUT  --data-binary @jira.py localhost:8086/admin/scripts/jira
+# → {"name":"jira","tools":["jira__search","jira__create"],"skipped":[]}
+```
+
+`<name>` 必须与文件主干遵守同样的 `^[a-z][a-z0-9_]{0,31}$` 规则，这也顺带排除了路径穿越。
+
+部署目标目录在容器内必须**可写**。官方镜像的根文件系统是只读的，所以要在那里挂载一个卷
+（并记住：持有管理令牌的人可以往里面放代码）。
+
+### Base 配置
+
+Base 配置（每个任务都会克隆的登录模板）也能以同样方式管理，格式为经过过滤的 `tar.gz`：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/admin/profiles` | `NEVOFLUX_BASE_PROFILES` 下的配置及其大小，以及是否启用了导出。 |
+| `PUT` | `/admin/profiles/:name` | 用上传的 `tar.gz` 替换配置 `<name>`（原子替换；此刻正在克隆的任务不会看到半个配置）。返回 `{name, written, skipped}`。 |
+| `DELETE` | `/admin/profiles/:name` | 删除配置 `<name>`。 |
+| `GET` | `/admin/profiles/:name/export` | 以 `tar.gz` 下载配置 `<name>`。**仅在 `NEVOFLUX_PROFILE_EXPORT=1` 时挂载。** |
+
+```bash
+# 打包一个配置目录（归档内路径相对于配置根目录）并上传
+tar -C ~/profiles/gemini -czf gemini.tgz .
+curl -s -H "$H" -X PUT --data-binary @gemini.tgz localhost:8086/admin/profiles/gemini
+```
+
+- **上传与导出双向过滤。** 可再生或遥测数据——缓存、崩溃报告、会话恢复备份、网站图标与
+  历史记录（`places.sqlite`，其中也包含书签）、DRM 插件、锁文件——在上传与导出时都会被丢弃。
+  任何可能保存登录状态的内容（cookies、`key4.db`、`logins.json`、`storage/default/`）都会
+  保留；未知条目也会保留。
+- **解包受限。** 符号链接及其他特殊条目会被跳过，逃出目标目录的路径会被拒绝（`400`），并有
+  大小限制：归档本身 `NEVOFLUX_PROFILE_MAX_UPLOAD_MB`（默认 200），解包后内容
+  `NEVOFLUX_PROFILE_MAX_UNPACKED_MB`（默认 500），超出时返回 `413`。
+- **`PUT` / `DELETE` 需要 base-profiles 挂载可写**——官方 Compose 文件以只读方式挂载它。
+
+> **导出默认关闭是有原因的。** 导出的配置包含它所登录的每个站点的已保存密码（`key4.db`、
+> `logins.json`）与会话 cookie。仅有管理令牌被认为还不够；你还必须设置
+> `NEVOFLUX_PROFILE_EXPORT=1`，并且用完后应当再关掉。
+
+## 环境变量参考
+
+| 环境变量 | 作用 | 默认值 |
+| --- | --- | --- |
+| `NEVOFLUX_MCP_TOOLS` | 脚本工具目录（路径列表） | 未设置——无脚本工具 |
+| `NEVOFLUX_MCP_ALLOWED_HOSTS` | `/mcp` 额外接受的 `Host` 名（逗号分隔） | 仅回环地址 |
+| `NEVOFLUX_SESSION_MODE` | `1` 时列出 `browser_*` 工具并预热共享浏览器（使用进程内引擎时不需要） | 关闭 |
+| `NEVOFLUX_ADMIN_TOKEN` | 管理 API 的 Bearer 令牌；挂载管理 API 的前提 | 未设置——管理 API 关闭 |
+| `NEVOFLUX_PROFILE_EXPORT` | `1` 时挂载配置导出路由 | 关闭 |
+| `NEVOFLUX_PROFILE_MAX_UPLOAD_MB` | 上传配置归档的大小上限 | `200` |
+| `NEVOFLUX_PROFILE_MAX_UNPACKED_MB` | 解包后配置的大小上限 | `500` |

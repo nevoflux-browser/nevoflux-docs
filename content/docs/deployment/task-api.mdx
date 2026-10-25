@@ -1,22 +1,29 @@
 ---
 title: Task API & interfaces
-description: The headless HTTP task API, the OpenAI / MCP / ACP front-ends, session and fixed-script modes, and the full CLI-flag and env-var reference.
+description: The headless HTTP task API — submitting tasks, follow-up turns, per-turn usage, cancellation — plus which interface lives on which port, session and fixed-script modes, and the full CLI-flag and env-var reference.
 ---
 
 In service mode the daemon serves a small HTTP **task API** on `--http-addr`. All
-endpoints are JSON.
+endpoints are JSON. The same port also carries the OpenAI / Anthropic and A2A
+front-ends; MCP, ACP and the admin API get ports of their own — see
+[Interfaces and ports](#interfaces-and-ports).
 
 ## Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/tasks` | Submit a task → `{"id":"task-N"}` |
-| `GET` | `/tasks/:id` | Status / result snapshot |
+| `GET` | `/tasks/:id` | Status / result snapshot (`404` for an unknown id) |
 | `GET` | `/tasks/:id/events` | **SSE** — `status` frames until terminal |
-| `DELETE` | `/tasks/:id` | Cancel (marks `failed`) → `true` / `false` |
-| `GET` | `/metrics` | Prometheus (`nevoflux_tasks_total` / `_failed`) |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible (also on `--openai-addr`) |
-| `POST` | `/session/close` | Session mode: tear down the reused session |
+| `DELETE` | `/tasks/:id` | Cancel → `202 Accepted`, or `404` for an unknown id |
+| `GET` | `/metrics` | Prometheus counters |
+| `POST` | `/session/close` | Session mode: tear down the reused browser session |
+| `GET` | `/tasks/:id/artifacts/:name` | Download a file the task left in its workspace (part of [A2A](/en/docs/deployment/a2a#returned-files)) |
+
+> **No authentication.** Nothing on this port checks credentials — not
+> `/tasks`, not `/session/close`, not the OpenAI / Anthropic endpoints. Anyone
+> who can reach it runs tasks with the container's provider key and browser.
+> Keep it on a private network or behind an authenticating proxy.
 
 ## Submitting a task
 
@@ -26,11 +33,12 @@ curl -X POST localhost:8080/tasks -H 'Content-Type: application/json' \
 # → {"id":"task-0"}
 ```
 
-The request body is a **task contract** shared by every front-end:
+The request body is the **task contract**:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `task` | string | — (**required**) | The instruction for the agent. |
+| `followups` | object[] | `[]` | Further turns of the same conversation, run after `task` — see [Follow-up turns](#follow-up-turns). *(v0.3.16)* |
 | `mode` | string | `"browser"` | Agent mode. |
 | `profile` | string | none | Named base-profile to clone (login state); omit for a blank base. |
 | `policy.allow_shell` | bool | `false` | Admit shell tools (`run_command`, `bash`). |
@@ -44,6 +52,7 @@ The request body is a **task contract** shared by every front-end:
 | `end_session` | bool | `false` | Session mode only — tear down the shared browser after this task. |
 | `save_profile` | bool | `false` | Session mode only — persist the clone back to a base profile at teardown (implies ending the session). |
 | `save_profile_as` | string | the cloned base | Optional base name to save-as. |
+| `backend` | string | none | Path of a [script backend](/en/docs/deployment/llm-apis#script-backends) to run instead of the agent loop — see [Choosing a backend per task](#choosing-a-backend-per-task). |
 
 > **Policy defaults to fully locked down.** With no `policy`, a task gets **no**
 > shell, **no** fs-write, **no** upload, and **any** domain. Grant capabilities
@@ -61,6 +70,10 @@ A full request:
   "idempotent": false, "no_retry": false }
 ```
 
+Failed attempts are retried automatically — at most 3 attempts in total, and only
+if the failed attempt dispatched no mutating tool, unless `idempotent` is set.
+`no_retry` turns retry off.
+
 ### Status / result
 
 ```bash
@@ -68,15 +81,40 @@ curl -s localhost:8080/tasks/task-0
 ```
 ```jsonc
 { "id": "task-0",
-  "status": "succeeded",           // queued | running | succeeded | failed
+  "status": "succeeded",           // queued | running | succeeded | failed | canceled
   "attempts": 1,
   "output": "The title is Example Domain.",
-  "error": null,
-  "artifacts": [] }
+  "artifacts": [],                 // file names left in the task workspace
+  "session_id": "automation-task-0-1",
+  "usage": [ { "main": { "input": 5120, "output": 210, "calls": 2, "cache_read": 4096 },
+               "last_input": 2860, "first_token_ms": 820, "total_ms": 9400,
+               "model": "claude-..." } ] }
 ```
 
-The result and a debug bundle are also **drained to the task workspace under
-`/work`** (`result.json`, `debug-bundle/`).
+- **`canceled`** is its own status since v0.3.16. A cancelled task used to report
+  `failed` with `error: "cancelled"`; it now reports `canceled` and keeps that
+  `error` string. Clients that match exhaustively on `status` need updating.
+- **`error`** appears on failure; `output` and `error` are omitted when empty.
+- **`session_id`** *(v0.3.16)* is the session of the last attempt, the id to give
+  `nevoflux-agent session export` when you want the full event log.
+- **`usage`** *(v0.3.16)* has one entry per agent turn that called the LLM:
+  `main` (input / output tokens, call count, and the prompt-cache
+  `cache_read` / `cache_write` portions of `input` when the provider reports
+  them — Anthropic traffic uses prompt caching since v0.3.16), `subagent` when
+  subagents ran, `last_input` (the context size of the last call), timing
+  (`first_token_ms`, `decode_ms`, `total_ms`) and `model`. Absent when no LLM
+  call ran — for example in fixed-script mode. `estimated: true` marks numbers
+  that were estimated rather than reported by the provider.
+- **`turn_outputs`** *(v0.3.16)* is present when the task had follow-ups: each
+  turn's final text, in order. `output` is the last of them.
+
+The task also writes `result.json` and a `debug-bundle/` into its **workspace**,
+`ws-<task-id>` under `NEVOFLUX_PROFILE_WORK`. The image does **not** set that
+variable, so the workspace lands in `/tmp/nevoflux-profiles/` — on the tmpfs,
+**not** in the `/work` mount. Files there can be fetched with
+`GET /tasks/:id/artifacts/:name`. If you point `NEVOFLUX_PROFILE_WORK` at `/work`
+to collect results on the host, note that the per-task **profile clones** (with
+their cookies) are created in the same directory while tasks run.
 
 ### Live events (SSE)
 
@@ -89,51 +127,103 @@ curl -N localhost:8080/tasks/task-0/events
 ```
 
 A `status` frame is emitted on each change (plus the terminal one), with keep-alive
-comments in between. The stream ends when the task reaches `succeeded` / `failed`.
+comments in between. The stream ends when the task reaches `succeeded`, `failed`
+or `canceled`.
 
 ### Cancel & metrics
 
 ```bash
-curl -X DELETE localhost:8080/tasks/task-0     # → true (cancelled) / false (already terminal)
-curl localhost:8080/metrics                    # Prometheus: nevoflux_tasks_total / _failed
+curl -i -X DELETE localhost:8080/tasks/task-0   # → 202 Accepted (404 if unknown)
+curl localhost:8080/metrics
+# nevoflux_tasks_total / nevoflux_tasks_failed / nevoflux_browser_restarts
 ```
 
-## Alternative interfaces
+`DELETE` marks a queued or running task `canceled` at the queue level. It does
+**not** interrupt an attempt that is already running: that attempt runs to its own
+end (bounded by `wall_clock_secs`), and its final result can replace the
+`canceled` status. Give tasks a wall clock if you need cancellation to bound
+cost.
 
-Three thin front-ends map a prompt to a task (all reduce to the same runner). Each
-is available on the main port and can also bind a **dedicated port**:
+### Follow-up turns
 
-| Interface | Endpoint | Dedicated-port flag |
-| --- | --- | --- |
-| OpenAI-compatible | `POST /v1/chat/completions` | `--openai-addr` (also on `--http-addr`) |
-| MCP (JSON-RPC 2.0) | `POST /mcp` | `--mcp-addr` |
-| ACP (JSON-RPC 2.0) | `POST /acp` | `--acp-addr` |
+*New in v0.3.16.* `followups` runs further turns of the **same conversation** in
+one task — same session id, same browser, with the plain text of earlier turns
+carried as history, the way a chat carries it:
 
 ```bash
-# each interface on its own port
+curl -X POST localhost:8080/tasks -H 'Content-Type: application/json' -d '{
+  "task": "open example.com and report the title",
+  "followups": [
+    {"message": "now summarise the first paragraph"},
+    {"message": "and list every link on the page", "delay_secs": 30}
+  ]}'
+```
+
+- `delay_secs` waits before sending that turn (for example, to let a prompt cache
+  expire when you are measuring it).
+- Turns stop at the **first failed turn** — later ones would be answering a
+  conversation that went wrong.
+- `turn_outputs` holds each turn's answer and `usage` one entry per turn.
+- Follow-ups apply to the agent loop; a script backend runs once.
+
+### Choosing a backend per task
+
+`backend` names a [script backend](/en/docs/deployment/llm-apis#script-backends)
+file for this one task, instead of the agent loop (or the process-wide
+`NEVOFLUX_HEADLESS_SCRIPT`). Its typical use is signing a script backend in:
+run a waiting script as a task with a long wall clock, log in through
+[VNC](/en/docs/deployment/docker#live-view-vnc--novnc) while it waits, and save
+the clone as a base profile.
+
+```bash
+curl -s localhost:8080/tasks -H 'content-type: application/json' -d '{
+  "task": "sign in",
+  "backend": "/opt/nevoflux/scripts/login-wait.py",
+  "profile": "gemini",
+  "wall_clock_secs": 900,
+  "save_profile": true,
+  "save_profile_as": "gemini"
+}'
+```
+
+> `backend` is any `.py` path readable inside the container, and the task API is
+> unauthenticated — so anyone who can reach `/tasks` can run any script that
+> exists in the image or its mounts. Scripts run in the sandboxed interpreter,
+> but they drive the browser without the task policy's limits. Don't mount
+> scripts you would not let a caller run.
+
+## Interfaces and ports
+
+Every front-end reduces a request to the same task queue. Which port serves what:
+
+| Interface | Endpoint(s) | On `--http-addr` | Dedicated flag | Docs |
+| --- | --- | --- | --- | --- |
+| Task API | `/tasks…`, `/metrics`, `/session/close` | yes | — | this page |
+| OpenAI Chat Completions, Responses, models | `/v1/chat/completions`, `/v1/responses`, `/v1/models` | yes | `--openai-addr` | [OpenAI & Anthropic APIs](/en/docs/deployment/llm-apis) |
+| Anthropic Messages | `/v1/messages` | yes | `--anthropic-addr` | [OpenAI & Anthropic APIs](/en/docs/deployment/llm-apis) |
+| A2A | `/.well-known/agent-card.json`, `/a2a`, `/a2a/v1` | yes | `--a2a-addr` | [A2A](/en/docs/deployment/a2a) |
+| MCP (Streamable HTTP) | `/mcp` | **no** | `--mcp-addr` | [MCP endpoint & admin API](/en/docs/deployment/mcp-endpoint) |
+| ACP (JSON-RPC 2.0) | `/acp` | **no** | `--acp-addr` | [below](#acp) |
+| Admin API | `/admin/…` | **no** | `--admin-addr` (+ `NEVOFLUX_ADMIN_TOKEN`) | [MCP endpoint & admin API](/en/docs/deployment/mcp-endpoint#admin-api) |
+
+```bash
+# everything on its own port
 nevoflux-agent --daemon --headless \
   --http-addr 0.0.0.0:8080 --openai-addr 0.0.0.0:8081 \
-  --mcp-addr 0.0.0.0:8082 --acp-addr 0.0.0.0:8083
+  --mcp-addr 0.0.0.0:8082 --acp-addr 0.0.0.0:8083 \
+  --a2a-addr 0.0.0.0:8084 --anthropic-addr 0.0.0.0:8085 \
+  --admin-addr 127.0.0.1:8086
 ```
 
-**OpenAI** — the last `user` message becomes the task:
+A dedicated flag adds a listener; it does not remove the endpoint from
+`--http-addr`. In particular the main port **always** answers A2A and the
+OpenAI / Anthropic formats.
 
-```bash
-curl -X POST localhost:8081/v1/chat/completions -H 'content-type: application/json' \
-  -d '{"model":"gpt-4","messages":[{"role":"user","content":"open example.com, report title"}]}'
-# → {"object":"chat.completion","choices":[{"message":{"role":"assistant","content":"...Example Domain"}, ...}]}
-```
+### ACP
 
-**MCP** — one tool, `run_browser_task` (plus `initialize`, `tools/list`):
-
-```bash
-curl -X POST localhost:8082/mcp -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"run_browser_task","arguments":{"task":"open example.com, report title"}}}'
-# → {"result":{"content":[{"type":"text","text":"...Example Domain"}],"isError":false}}
-```
-
-**ACP** — a prompt turn (plus `initialize`, `session/new`):
+A minimal ACP endpoint: `initialize`, `session/new` and `session/prompt`. The
+prompt's text blocks are joined into a task; the answer comes back as one text
+block, with no streaming `session/update` notifications.
 
 ```bash
 curl -X POST localhost:8083/acp -H 'content-type: application/json' \
@@ -142,16 +232,12 @@ curl -X POST localhost:8083/acp -H 'content-type: application/json' \
 # → {"result":{"stopReason":"end_turn","content":[{"type":"text","text":"...Example Domain"}]}}
 ```
 
-> **These front-ends are intentionally minimal** — single-tool MCP;
-> request/response ACP with no streaming `session/update` notifications;
-> non-streaming OpenAI. Enough to drive a headless task from an OpenAI / MCP / ACP
-> client, not full protocol implementations.
+### Env-var defaults for prompt-only interfaces
 
-### Env-var overrides for the thin interfaces
-
-OpenAI / MCP / ACP requests carry only a prompt, so `mode` / `profile` / `policy` /
-caps come from the environment. `POST /tasks` still takes all of these per request
-— the env vars are only the defaults for the interfaces that can't carry them.
+The OpenAI / Anthropic, MCP `run_browser_task`, ACP and A2A front-ends carry only a
+prompt, so `mode` / `profile` / `policy` / caps come from the environment.
+`POST /tasks` still takes all of these per request — the env vars are only the
+defaults for the interfaces that can't carry them.
 
 | Env var | Field | Default |
 | --- | --- | --- |
@@ -161,30 +247,37 @@ caps come from the environment. `POST /tasks` still takes all of these per reque
 | `NEVOFLUX_POLICY_ALLOW_FS_WRITE` | policy.allow_fs_write | `false` |
 | `NEVOFLUX_POLICY_ALLOW_UPLOAD` | policy.allow_upload | `false` |
 | `NEVOFLUX_POLICY_DOMAIN_ALLOWLIST` | policy.domain_allowlist | empty (comma-separated) |
-| `NEVOFLUX_WALL_CLOCK_SECS` | wall_clock_secs | none |
+| `NEVOFLUX_WALL_CLOCK_SECS` | wall_clock_secs | none (A2A streams: 900) |
 | `NEVOFLUX_TOKEN_BUDGET` | token_budget | none |
 | `NEVOFLUX_IDEMPOTENT` | idempotent | `false` |
 | `NEVOFLUX_NO_RETRY` | no_retry | `false` |
+| `NEVOFLUX_SAVE_PROFILE` | save_profile | `false` |
+| `NEVOFLUX_SAVE_PROFILE_AS` | save_profile_as | none |
 
-Booleans accept `1` / `true` / `yes`.
+Booleans accept `1` / `true` / `TRUE` / `yes`.
 
 ## Session mode
 
 By default every task is fully isolated: clone a fresh profile → launch a browser →
 run → kill the browser and delete the clone. Set **`NEVOFLUX_SESSION_MODE=1`** to
-run a **task-flow** instead: the first task launches **one** browser + profile
-clone, and later tasks **reuse** it (the active tab is soft-reset to `about:blank`
-between tasks) until you end the flow.
+run a **task-flow** instead: tasks share **one** browser + profile clone (the
+active tab is soft-reset to `about:blank` between tasks) until you end the flow.
 
 ```bash
 # NEVOFLUX_SESSION_MODE=1 in the environment
-curl -X POST localhost:8080/tasks -d '{"task":"log in to example.com"}'          # launches the browser
+curl -X POST localhost:8080/tasks -d '{"task":"log in to example.com"}'          # uses the shared browser
 curl -X POST localhost:8080/tasks -d '{"task":"go to the dashboard"}'            # reuses it (shared login)
 curl -X POST localhost:8080/tasks -d '{"task":"export the report","end_session":true}'  # runs, then tears down
 # or end out-of-band at any time:
-curl -X POST localhost:8080/session/close        # → {"closed":true|false}
+curl -X POST localhost:8080/session/close        # → {"closed":true|false,"saved_to":...,"save_error":...}
 ```
 
+- **Pre-warmed browser** *(v0.3.14)*. With session mode on, the daemon launches the
+  shared browser at startup, so the first task (or the first MCP `browser_*` call)
+  does not pay for — or fail on — a cold start. A failed pre-warm is logged and
+  retried by the next task. (Skipped when the
+  [in-process engine](/en/docs/deployment/docker#browser-engine-amd64-vs-arm64)
+  serves browser tools.)
 - **Drive tasks sequentially** — submit, wait for it to finish, then submit the
   next. The shared browser is serialized by a lock, but task **order** is the
   caller's job.
@@ -194,11 +287,19 @@ curl -X POST localhost:8080/session/close        # → {"closed":true|false}
   (the next flow clones a fresh base profile).
 - **Crash recovery** — if the shared browser crashes mid-flow, the next task
   relaunches it against the same clone (cookies persist on disk, so login survives).
+- **Soft reset** — skipped for script-backend tasks, which manage their own tabs
+  (blanking a tab a script reuses would force a cold reload on every request).
+  `NEVOFLUX_SESSION_SOFT_RESET=0` turns it off for all tasks.
 
 **Persist login back to a base.** Set `save_profile: true` on a task (or
-`POST /session/close` with `{"save": true}`) to write the session's clone back to a
-base profile at teardown (`save_profile_as` picks a different base name). This
-requires the base-profiles mount to be **writable** (drop the `:ro`).
+`POST /session/close` with `{"save": true, "as": "<name>"}`) to write the
+session's clone back to a base profile at teardown (`save_profile_as` / `as` picks
+a different base name). This requires the base-profiles mount to be **writable**
+(drop the `:ro`).
+
+[A2A](/en/docs/deployment/a2a#contexts-one-container-one-conversation) contexts
+use the same task-flow machinery whether or not `NEVOFLUX_SESSION_MODE` is set,
+and `POST /session/close` also releases a bound A2A context.
 
 ## Fixed-script mode (no LLM)
 
@@ -209,12 +310,17 @@ the daemon at a Python script:
 NEVOFLUX_HEADLESS_SCRIPT=/opt/nevoflux/fixed-flow.py
 ```
 
-When set, **every headless task runs that script instead of the LLM agent loop**.
-The script defines `def run(task): ...`; the daemon calls it with the interface's
-task string. Whatever `run` **returns** (or prints) becomes the `output`; a raised
-exception → `status: "failed"` with the error. It uses the same browser tools as
-the agent (in the sandboxed interpreter), driving the bound headless browser — but
-with **zero LLM calls and no API key** (and no GBrain needed).
+When set, **every headless task runs that script instead of the LLM agent loop**
+(unless a request picks another backend — see
+[model routing](/en/docs/deployment/llm-apis#model-names-and-routing) and
+[`backend`](#choosing-a-backend-per-task)). The script defines `def run(task): ...`;
+the daemon calls it with the interface's task string. Whatever `run` **returns**
+(or prints) becomes the `output`; a raised exception → `status: "failed"` with the
+error. It uses the same browser tools as the agent, in the sandboxed **Monty**
+interpreter, driving the bound headless browser — but with **zero LLM calls and
+no API key** (and no GBrain needed). A script may instead define
+`def chat(request)` to receive the full
+[script-backend contract](/en/docs/deployment/llm-apis#script-backends).
 
 ```python
 def run(task):
@@ -226,12 +332,18 @@ def run(task):
     return browser_get_markdown(tab_id=tab)["markdown"]
 ```
 
-Two gotchas:
+Gotchas:
 
 1. `browser_navigate` opens a **new, inactive** tab and returns `{"tab_id": N}` —
    thread that `tab_id` into every later call, or tools hit "No active web tab found".
 2. Tool results are **structured** dicts, not strings — e.g.
    `browser_get_markdown(...)` → `{"markdown","title","url","success"}`. Index the field.
+3. Monty is a Python **subset**, upgraded in v0.3.14 (it now runs much more
+   ordinary Python than before). Unsupported constructs fail loudly — decorators,
+   for instance, are rejected rather than silently ignored.
+4. The script's time budget is the task wall clock minus a 10-second margin
+   (`metadata.budget_secs` in a `chat()` request). Monty has no clock, so bound
+   polling loops by round count.
 
 Mount the script and set the env var (Compose):
 
@@ -252,12 +364,22 @@ The headless deployment flags on the `nevoflux-agent` binary:
 
 | Flag | Meaning |
 | --- | --- |
-| `--daemon` | Run as the core daemon. **Required** for headless mode. |
-| `--headless` | Headless automation mode: spawn a browser per task and serve the task API. |
-| `--http-addr <addr>` | Bind the task API here (e.g. `0.0.0.0:8080`); also serves `/v1/chat/completions`. |
-| `--openai-addr <addr>` | Serve the OpenAI-compatible API on a **dedicated** port. |
-| `--mcp-addr <addr>` | Serve MCP-over-HTTP (`POST /mcp`) on this port. |
-| `--acp-addr <addr>` | Serve ACP-over-HTTP (`POST /acp`) on this port. |
+| `--daemon` | Run as the core daemon. **Required** for every mode on this page. |
+| `--headless` | Headless automation mode: spawn a browser per task and serve the interfaces below. |
+| `--remote-control` | Run a phone-driven head with no HTTP surface — see [Remote control (container)](/en/docs/deployment/remote-control). *(v0.3.14)* |
+| `--http-addr <addr>` | Task API; also OpenAI, Anthropic and A2A routes. |
+| `--openai-addr <addr>` | OpenAI Chat Completions, Responses and `/v1/models` on a dedicated port. |
+| `--anthropic-addr <addr>` | Anthropic Messages on a dedicated port. *(v0.3.16)* |
+| `--a2a-addr <addr>` | A2A card + JSON-RPC paths on a dedicated port. *(v0.3.16)* |
+| `--mcp-addr <addr>` | MCP over Streamable HTTP (`/mcp`). Only served here. |
+| `--acp-addr <addr>` | ACP over HTTP (`POST /acp`). Only served here. |
+| `--admin-addr <addr>` | Token-protected admin API; not mounted without `NEVOFLUX_ADMIN_TOKEN`. Bind it to a private interface. *(v0.3.14)* |
+
+To use a `config.toml` somewhere other than `~/.config/nevoflux/`, set
+**`NEVOFLUX_CONFIG=<path>`** *(v0.3.16)*; it takes precedence over the default
+location, and an empty value counts as unset. (The binary also accepts a
+`--config` flag, but as of v0.3.16 the daemon does not read it — use the
+environment variable.)
 
 > Not to be confused with **`--mcp`** (no `--daemon`), which runs the separate
 > stdio MCP server for [Claude Code integration](/en/docs/features/mcp) — a

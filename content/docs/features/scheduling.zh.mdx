@@ -18,6 +18,14 @@ description: 按日历计划运行任务,并让智能体追求一个在每轮结
 
 在创建前,智能体总会先与你确认该 schedule 的**名称**和一个人类可读的**节奏**。
 
+> **创建定时任务需要 Full auto**(v0.3.16 新增)。定时运行触发时没有人在场确认它的工具
+> 调用,因此由它自己批准。所以 `schedule_create` 会对照你的
+> [Agent execution 档位](/zh/docs/settings/general#agent-execution-权限档位)校验,低于
+> **Full auto** 一律拒绝 —— 无论该 schedule 的 `mode` 是什么,也无论调用来自 NevoFlux
+> 自己的智能体,还是经由 NevoFlux 工具的 ACP/CLI 提供商。列出、暂停、恢复、立即运行和取消
+> 已有的 schedule 不受影响。这比[循环](/zh/docs/features/automation#循环周期性任务)
+> 更严格(循环的 `mode: chat` 无需额外授权):一个 schedule 可以无人值守地运行数月。
+
 - **节奏** —— 周期性作业使用 5 字段 cron 表达式(如 `0 9 * * *`),一次性作业使用
   `at` 时间(RFC3339,或 Unix 秒)。二者互斥。
 - **最小节奏为 1 小时。** 触发频率高于此的 cron 会被拒绝 —— 更高频的工作请使用
@@ -32,6 +40,10 @@ description: 按日历计划运行任务,并让智能体追求一个在每轮结
 
 Schedule 由 NevoFlux 守护进程触发,因此只要 NevoFlux 在运行它们就会运行;轮询粒度远
 小于 1 小时的最小节奏。
+
+[端侧模型](/zh/docs/configuration/local-models#本地模式下有哪些变化)启用期间,到期的
+schedule 会被**记为错过**并顺延到下一次,而不会运行 —— 即使开启了 `catch_up`,之后也不会
+补跑。需要模型来判定的目标会暂停;带程序化 `check` 的目标照常运行。
 
 ### 管理定时任务
 
