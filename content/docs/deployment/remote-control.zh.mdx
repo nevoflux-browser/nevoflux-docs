@@ -1,0 +1,151 @@
+---
+title: 远程控制（容器）
+description: 运行一个由手机驱动的无头 NevoFlux 容器——--remote-control、Compose 中的 remote 服务、它的持久数据卷、账号登录，以及固定的模式与执行档位。
+---
+
+自 **v0.3.14** 起，容器可以作为一个**远程控制端（head）**：一个浏览器、一段长对话，通过
+nevoflux.app 由你的手机驱动，全程不需要桌面。连接后手机能做什么，见
+[远程控制](/zh/docs/features/remote-control)功能页；本页讲如何运行这个容器。
+
+```bash
+nevoflux-agent --daemon --remote-control
+```
+
+与其他所有无头模式不同，**`--remote-control` 完全不提供 HTTP**。守护进程主动外连中继；
+没有需要发布、守护或加防火墙的端口。（它可以与 `--headless` 及各接口标志组合使用，但两者
+都不需要。）
+
+## 使用 Compose
+
+官方 `docker-compose.yml` 中有一个 `remote` 服务，挂在 `remote` profile 之后，所以
+`docker compose up` 不会启动它：
+
+```bash
+# 1. 给容器一个 nevoflux.app 账号令牌（见下文）
+cp ~/.local/share/nevoflux/account-token ./account-token     # 取自已登录的桌面端
+
+# 2. 启动
+docker compose --profile remote up remote
+
+# 3. 读取它打印的连接信息块，把整块粘贴进手机上的门户
+#    ——门户会自动找出链接与配对码
+docker compose --profile remote logs remote | head -40
+```
+
+连接信息块大致如下：
+
+```text
+NevoFlux remote control is open.
+
+On your phone, open this link and sign in to the same account:
+
+    https://portal.nevoflux.app/connect/<channel-id>
+
+Then enter the pairing code:
+
+    <pairing code>
+
+This head answers in `agent` mode with Agent execution `browser-auto`.
+Both are fixed at startup and cannot be changed from the phone.
+```
+
+该服务逐项说明：
+
+```yaml
+  remote:
+    profiles: ["remote"]
+    image: nevoflux/agent:latest
+    command: ["--daemon", "--remote-control"]
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY (or your provider's key)}"
+      NEVOFLUX_REMOTE_MODE: "agent"                  # chat | browser | agent
+      NEVOFLUX_REMOTE_EXECUTION_TIER: "browser-auto" # read-only | browser-auto |
+                                                     # browser-auto-local-read | full-auto
+      RUST_LOG: "info"
+      # NEVOFLUX_PORTAL_URL: "https://portal.nevoflux.app"
+      # NEVOFLUX_RELAY_URL:  "wss://relay.nevoflux.app"
+    volumes:
+      - remote-data:/var/nevoflux/data              # 必需，且不能是 tmpfs
+      - ./account-token:/var/nevoflux/data/account-token:ro
+      - ./out:/work
+    tmpfs: [/tmp, /home/nevo/.gbrain, /home/nevo/.cache]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    deploy: { resources: { limits: { cpus: "2.0", memory: 4g, pids: 512 } } }
+    restart: unless-stopped
+
+volumes:
+  remote-data:    # 该端的身份、浏览器配置与历史
+```
+
+## 数据卷就是该端的身份
+
+`/var/nevoflux/data` 保存 `remote-control.json`——通道及其配对码——以及该端的浏览器配置
+和对话。它**必须是真正的卷，绝不能是 tmpfs**：放在 tmpfs 上，身份会随容器一起消失，每次
+重启都是一个新的端，已配对的手机只能报告"连不上了"。这就是为什么 `remote` 服务没有把
+`/var/nevoflux/data` 列在 `tmpfs` 下，而任务类服务则列了。（自 v0.3.14 起，镜像也把
+`/var/nevoflux/data` 声明为 `VOLUME`。）
+
+- **删除该卷会解除所有与该端配对的手机。**
+- **`remote-control.json` 损坏时拒绝启动**，而不是悄悄生成新身份——那会让已配对的手机
+  无处可连。若确实想重新配对，请有意识地删除该文件。
+- 浏览器配置也在卷上，因此**站点登录状态在重启后依然保留**。
+
+## 登录 nevoflux.app
+
+该端需要一个账号令牌，并且只有登录了**同一账号**的手机才能连上它。提供令牌有三种方式：
+
+| 方式 | 做法 | 取舍 |
+| --- | --- | --- |
+| **挂载文件**（Compose 默认） | 从已登录的桌面版 NevoFlux 数据目录复制 `account-token`，以只读方式挂载到 `/var/nevoflux/data/account-token`。 | 令牌不进入进程环境变量。 |
+| **`NEVOFLUX_SERVICE_TOKEN`** | 以环境变量 / 容器 secret 注入令牌。优先于文件；空值视为未设置。 | 一个 secret 可用于多个端（每个端仍各自开通道），但 agent 自己的 `bash` 运行在该进程内，能读取它的环境变量。 |
+| **设备登录** | `nevoflux-agent account login` 在进程内执行设备码流程（无需守护进程）：打印一个 URL 和代码，在任意设备上批准后，把 `account-token` 存进数据目录。`--print-token` 还会在 stdout 打印原始令牌；`--no-save` 只打印、不写文件。 | 需要交互，每个卷一次。若用这种方式登录，不要在同一路径上再挂载只读的 `account-token`。 |
+
+`nevoflux-agent account status` 报告令牌是否存在（以及是否来自环境变量）；
+`account logout` 删除已保存的文件。
+
+## 模式与执行档位在启动时固定
+
+该端在启动时一次性解析其聊天模式与
+[Agent execution 档位](/zh/docs/settings/general#agent-execution-权限档位)，两者各自独立：
+
+1. `NEVOFLUX_REMOTE_MODE` / `NEVOFLUX_REMOTE_EXECUTION_TIER`，否则
+2. `config.toml` 中的 `[remote_control]`，否则
+3. `agent` / `read-only`。
+
+```toml
+[remote_control]
+mode = "agent"                    # chat | browser | agent
+execution_tier = "browser-auto"   # read-only | browser-auto | browser-auto-local-read | full-auto
+```
+
+设置其中一个不会重置另一个。无法识别的模式回落到 `chat`，无法识别的档位回落到最安全的
+档位——拼写错误永远不会扩大授权。
+
+手机会显示这两个值，但**都不能修改**：容器旁没有本地用户随时收回授权，如果手机能提升
+档位，这个设置就只剩建议的意义了。
+
+## 故障行为
+
+- **启动要么全成功，要么失败。** 缺少账号令牌、账号服务不可达、数据目录不可写、浏览器起不来，
+  都会以非零退出并说明原因。半启动的容器在编排器看来是健康的，对拿着手机的人却毫无用处。
+- **浏览器挂掉会被重新拉起**并重新绑定到同一段对话，手机会收到通知。打开的页面会丢失；已
+  登录的站点不会。**连续三次**重新拉起失败后进程退出，让编排器重建容器——因此使用
+  `restart: unless-stopped`。
+
+## 安全
+
+> **配对码是秘密，但不是唯一的秘密。** 持有配对码的人可以按上面设定的模式与档位驱动该
+> 容器——但只能从该端登录的那个账号发起。中继会把通道绑定到第一个打开它的账号，并拒绝
+> 其他任何账号，因此单独泄露配对码什么也够不着。从日志中读一次配对码，并像对待密码一样
+> 保管它；它也保存在数据卷中。
+
+- **为无人值守的端选好档位。** 在 `full-auto` 下，agent 的 shell 能读取数据卷，包括账号
+  令牌与配对身份。
+- 常规的无头部署边界依然适用：限制容器出口，除账号令牌外不要挂载宿主凭据。
+- `[remote_control] ice_servers` 与 `[remote_control.cloudflare_turn]` 只在以 `webrtc`
+  cargo feature 构建的守护进程中生效，而发行版二进制（因此官方镜像）并未启用它。官方镜像
+  中所有连接都经由中继；请保持它们未设置。
+- `NEVOFLUX_PORTAL_URL`（默认 `https://portal.nevoflux.app`）与 `NEVOFLUX_RELAY_URL`
+  （默认 `wss://relay.nevoflux.app`）可把该端指向你自己运行的门户 / 中继。

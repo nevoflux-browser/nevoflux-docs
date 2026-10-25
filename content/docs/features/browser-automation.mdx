@@ -1,6 +1,6 @@
 ---
 title: Browser Automation
-description: The agent drives the browser for you — navigate, click, type, read, and more.
+description: The agent drives the browser for you — navigate, click, type, read, and debug what a page is doing.
 ---
 
 The agent controls the browser through a built-in tool set, so you can ask it to
@@ -11,16 +11,75 @@ The agent controls the browser through a built-in tool set, so you can ask it to
 - **Navigate** — open URLs, go back/forward.
 - **Read** — get a page's text or Markdown, and an accessibility-tree snapshot of
   its structure.
-- **Interact** — click, type, fill fields, scroll, and upload files. It can target
-  elements by description or by a stable element id.
+- **Interact** — click, type, fill fields, scroll, press keys, and upload files.
 - **Inspect** — find elements, query the DOM, and read element details.
 - **Tabs** — list, query, and switch between open tabs.
 - **Capture** — take screenshots.
 - **Run JS** — evaluate JavaScript on the page.
 - **Wait** — wait for elements or conditions before continuing.
+- **Debug** — read a page's console and its network requests, when you ask for
+  them by name (see [below](#console-and-network-debugging)).
 
-It also has a **smart input** engine that probes a target field, picks the best
-strategy to enter text, and verifies the result.
+It also has a **smart input** engine (`browser_input`) that probes a target field,
+picks the best strategy to enter text — including rich editors such as ProseMirror,
+Slate, Draft.js and Lexical — and reads the result back to verify it.
+
+## How it targets elements
+
+The page snapshot labels each interactive element with an id such as `[e12]`. The
+agent acts on those ids: `browser_click_by_id`, `browser_type_by_id` and
+`browser_fill_by_id`, and — since v0.3.16 — `browser_input`, `browser_probe`,
+`browser_upload_file` and `browser_wait_for` take an `element_id` too. An id
+resolves to that exact node; if the page has changed and the element is gone, the
+call is refused and the agent takes a fresh snapshot instead of acting on whatever
+now matches.
+
+The CSS-selector forms (`browser_click`, `browser_type`, `browser_fill`) are a
+fallback for elements that have no id. They are not offered by default: the agent
+has to load them on purpose with `load_selector_tools`, after which they are
+ordinary tool calls under the same permission checks.
+
+## Console and network debugging
+
+Two read-only tools help with "why is this page broken?". Neither is offered to
+the agent unless **your own message contains the tool's exact name** — "why is this
+page slow?" is not enough. That is deliberate: a network log can contain
+credentials, so nothing is captured unless you ask for it in so many words.
+
+```text
+Call browser_console_messages and tell me what errors this page is throwing.
+```
+
+```text
+Call browser_network_requests — I'm going to click through the checkout, then
+tell me which API calls failed.
+```
+
+**`browser_console_messages`** reads console output and uncaught JavaScript errors
+(level, text, source, line, timestamp) from every frame of the tab, including
+cross-origin iframes. It reads the buffer the browser already keeps, so messages
+logged *before* you asked are included and no reload is needed. Message text is
+returned as the page logged it — **it is not redacted**, so a page that logs a
+token will show it to the agent and your model provider.
+
+**`browser_network_requests`** lists requests — URL, method, status, resource type,
+duration, wire sizes, and a whitelist of headers. How recording works:
+
+- Recording **starts when the turn that names the tool starts**, and covers every
+  tab. Requests made before that are not visible, so load (or reload) the page
+  after asking.
+- It **keeps running across turns** — you can click around the page yourself and
+  ask again — until the agent calls `browser_network_capture_stop` or 30 minutes
+  pass. Ask the agent to stop it when you are done.
+- Request and response **bodies are never captured**. `Authorization`, `Cookie`
+  and `Set-Cookie` values read `<redacted>`.
+- At most 100 records come back per call. The agent can narrow by resource type
+  (e.g. `xmlhttprequest`, `fetch`) and/or to failures only (4xx, 5xx, network
+  errors).
+
+Both tools need the real browser. The headless, in-process engine some
+deployments use refuses them by name rather than returning an empty log that
+would read as "the page did nothing".
 
 ## Examples
 
@@ -33,8 +92,21 @@ Fill the signup form on this page with my details from my User profile, but stop
 before submitting so I can review it.
 ```
 
-> Browser actions respect your
-> [Agent execution tier](/en/docs/settings/general#agent-execution-tiers). At
-> **Read-only** (the default) the agent navigates and reads on its own but asks
-> before every click or keystroke; from **Browser auto** upward it interacts with
-> the page unprompted.
+## Permissions
+
+Browser actions respect your
+[Agent execution tier](/en/docs/settings/general#agent-execution-tiers):
+
+| What the agent does | Runs without asking from |
+| --- | --- |
+| Navigate, read, snapshot, screenshot, wait, find elements, read console/network | **Read-only** (all tiers) |
+| Click, type, fill, scroll, key press, switch tabs (`browser_activate_tab`) | **Browser auto** |
+| Smart input (`browser_input`), file upload, run JavaScript | **Full auto** |
+
+Switching tabs counts as an interaction (v0.3.16): it changes what you are looking
+at. Smart input and file upload are not in the browser-interaction bucket, so below
+**Full auto** they ask — upload because it reads a file off your disk.
+
+[Pack site rules](/en/docs/packs/development#site-rules--componentstool_policy) can
+add a question or a refusal on top of the tier for particular sites. A click or a
+fill is judged on the URL of the tab it lands in.

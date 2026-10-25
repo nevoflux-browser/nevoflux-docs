@@ -1,0 +1,202 @@
+---
+title: A2A (Agent2Agent)
+description: Serve a headless NevoFlux container to other agents over the A2A protocol — v0.3 and v1.0 wire formats, the agent card, streaming tasks, contexts that keep one browser, returned files — and call remote A2A agents as if they were MCP servers. New in agent v0.3.16.
+---
+
+New in **v0.3.16**, a NevoFlux agent is a peer on an **A2A (Agent2Agent)**
+network in both directions:
+
+- **Being called** — a headless container publishes an agent card and accepts
+  A2A tasks, so other agents can hand it browser work.
+- **Calling out** — a NevoFlux daemon (desktop or headless) can register a remote
+  A2A agent like an MCP server and use its skills as tools.
+
+## Serving A2A from a container
+
+```bash
+nevoflux-agent --daemon --headless --http-addr 0.0.0.0:8080 --a2a-addr 0.0.0.0:8084
+```
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/.well-known/agent-card.json` | Discovery. Lists both protocol versions and their URLs. **Never authenticated.** |
+| `POST` | `/a2a` | JSON-RPC, protocol **0.3.0** |
+| `POST` | `/a2a/v1` | JSON-RPC, protocol **1.0** |
+| `GET` | `/tasks/:id/artifacts/:name` | Download a file a task returned by link |
+
+These routes are mounted on `--a2a-addr` **and on the main `--http-addr`
+port**. `--a2a-addr` gives A2A a port of its own (the shipped Compose file
+publishes it as `8084`); it does not switch A2A on — anyone who can reach the
+task port can already speak A2A to it. Set `NEVOFLUX_A2A_TOKEN` (below) if that
+matters.
+
+### Two protocol versions, two paths
+
+A2A 1.0 is a breaking change from 0.3: the RPCs were renamed, the `kind`
+discriminator removed, and the state enum became `TASK_STATE_*`. The spec also
+says a request **without** an `A2A-Version` header must be read as 0.3, so a
+1.0-only server would reject every client that does not send the header. Each
+path therefore speaks exactly one version, and the card advertises both:
+
+| | `/a2a` (0.3.0) | `/a2a/v1` (1.0) |
+| --- | --- | --- |
+| Send, wait for the result | `message/send` | `SendMessage` |
+| Send, stream (SSE) | `message/stream` | `SendStreamingMessage` |
+| Read a task | `tasks/get` | `GetTask` |
+| Cancel | `tasks/cancel` | `CancelTask` |
+| Reconnect to a stream | `tasks/resubscribe` | `SubscribeToTask` |
+| Roles / states | `user`, `completed`, … | `ROLE_USER`, `TASK_STATE_COMPLETED`, … |
+
+The 1.0 path also accepts camelCase method names (`sendMessage`, …). Sending an
+`A2A-Version` header that disagrees with the path is refused with a
+`VersionNotSupported` error. The card itself is always served in the 1.0 shape;
+a 0.3 client finds its endpoint under `supportedInterfaces`.
+
+**Not served:** push-notification webhooks and the `input-required` state — a
+container has nobody to ask.
+
+```bash
+curl -s localhost:8084/.well-known/agent-card.json | jq '.supportedInterfaces'
+
+# 1.0, blocking
+curl -s localhost:8084/a2a/v1 -H 'content-type: application/json' -d '{
+  "jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{
+    "messageId":"m1","role":"ROLE_USER","contextId":"demo",
+    "parts":[{"text":"open example.com and report the title"}]}}}' \
+  | jq '.result.status.state, .result.status.message.parts[0].text'
+
+# 0.3, blocking
+curl -s localhost:8084/a2a -H 'content-type: application/json' -d '{
+  "jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{
+    "kind":"message","messageId":"m1","role":"user","contextId":"demo",
+    "parts":[{"kind":"text","text":"open example.com and report the title"}]}}}'
+```
+
+Ready-made client scripts ship in the agent repository at
+`deploy/headless/examples/a2a-client-v1.sh` and `a2a-client-v03.sh`; reading them
+side by side is the quickest summary of what 1.0 changed.
+
+### What a caller controls — and what it doesn't
+
+A caller sends a prompt and, optionally, a `contextId`. **Mode, profile and
+policy come from the container's environment** (`NEVOFLUX_TASK_*`,
+`NEVOFLUX_POLICY_*`), never from the request: if a caller could set
+`allow_shell`, anyone able to reach the port could run shell in the container.
+
+The card's `skills` are generated from that configuration, so callers can see
+the capability without being able to change it:
+
+| Configuration | Advertised skill |
+| --- | --- |
+| `NEVOFLUX_HEADLESS_SCRIPT` set | `fixed-script` — deterministic pipeline, no LLM |
+| default policy | `browser-readonly` — navigate, read, screenshot; no shell, no file writes |
+| `NEVOFLUX_POLICY_ALLOW_SHELL` and/or `_ALLOW_FS_WRITE` on | `browser-extended`, naming the extra permissions |
+
+The card never contains tokens, profile names or keys.
+
+### Contexts: one container, one conversation
+
+A `contextId` maps to a **task-flow**: turns in the same context reuse the same
+browser, the same profile clone, and the conversation so far (earlier turns are
+replayed into the prompt). This happens whatever `NEVOFLUX_SESSION_MODE` is set
+to — a caller that sent a `contextId` should never silently get a stateless
+agent.
+
+- **One context at a time.** A message naming a *different* `contextId` while one
+  is bound is refused (`UnsupportedOperation`) — run another container for it. A
+  message with **no** `contextId` joins the bound one (or starts one).
+- **Idle timeout.** A context is released after
+  `NEVOFLUX_A2A_CONTEXT_IDLE_SECS` (default 1800) of silence, or immediately by
+  `POST /session/close` on the task port.
+- **History is bounded and volatile.** Only the 20 most recent turns are
+  replayed — history is part of every prompt, and an unbounded context would grow
+  each turn's token cost without the caller noticing. It lives in memory:
+  restarting the container loses it.
+
+Because turns in a context share cookies and storage, the same caution as
+[session mode](/en/docs/deployment/task-api#session-mode) applies: a context is
+for one trusted caller's sequential work.
+
+### Streaming, disconnects and the queue
+
+`message/stream` / `SendStreamingMessage` return SSE: a task snapshot first,
+then `working` status updates (carrying text a script backend emits), then a
+final `completed` or `failed` update.
+
+> **Set `NEVOFLUX_WALL_CLOCK_SECS` for A2A.** Unlike the OpenAI endpoints, an A2A
+> stream does **not** cancel its task when the client disconnects — the client is
+> allowed to come back with `tasks/resubscribe` / `SubscribeToTask`. The task
+> queue is serial, so without a budget one vanished client can hold it. When the
+> variable is unset, A2A streaming tasks fall back to **900 seconds** and the
+> daemon logs a warning.
+
+Resubscribing replays the task's **status transitions**, not the text it streamed
+while you were away. Blocking `message/send` / `SendMessage` waits up to 600
+seconds for the task to finish.
+
+`tasks/cancel` / `CancelTask` reports the task as `canceled`; like
+`DELETE /tasks/:id` it marks the task at the queue level rather than
+interrupting an attempt that is already running.
+
+### Returned files
+
+Files a task leaves in its workspace come back as artifacts on the finished task:
+
+- up to `NEVOFLUX_A2A_INLINE_MAX_BYTES` (default 262144 = 256 KiB) each, inline
+  as base64 — with at most 1 MiB inlined per response in total;
+- anything larger as a `uri` pointing at `GET /tasks/:id/artifacts/:name`.
+
+Artifact links are built from `NEVOFLUX_A2A_PUBLIC_URL` if set, else from the
+request's `Host` header (and `X-Forwarded-Proto`). Behind a reverse proxy that
+rewrites `Host`, set the public URL or callers get links they cannot reach. The
+artifact route only serves plain file names from that task's workspace; path
+traversal is refused.
+
+### Authentication
+
+| Env var | Effect | Default |
+| --- | --- | --- |
+| `NEVOFLUX_A2A_TOKEN` | Require `Authorization: Bearer <token>` on `/a2a`, `/a2a/v1` and the artifact route. The card stays public and advertises that a bearer token is required. | unset — **no authentication** |
+| `NEVOFLUX_A2A_PUBLIC_URL` | Externally reachable base URL for the card and artifact links | the request's `Host` |
+| `NEVOFLUX_A2A_CONTEXT_IDLE_SECS` | Release an idle context after this many seconds | `1800` |
+| `NEVOFLUX_A2A_INLINE_MAX_BYTES` | Inline artifacts up to this size; larger ones get a URI | `262144` |
+| `NEVOFLUX_WALL_CLOCK_SECS` | Per-task budget; also the A2A streaming fallback's override | unset (A2A streams: 900 s) |
+
+> The token protects the **A2A** routes only. The task API (`/tasks`), the
+> OpenAI / Anthropic endpoints and `/session/close` on the same port stay
+> unauthenticated — publishing `--http-addr` with a token set does not make the
+> rest of that port private.
+
+## Calling remote A2A agents
+
+Any NevoFlux daemon can use a remote A2A agent's skills as tools. Register it in
+`mcp-servers.toml` (`%APPDATA%\nevoflux\` on Windows, `~/.config/nevoflux/`
+elsewhere) with `server_type = "a2a"`:
+
+```toml
+[[servers]]
+name = "agent-b"
+server_type = "a2a"
+url = "http://other-host:8084"   # its base URL or its agent-card URL
+enabled = true
+
+[servers.env]
+A2A_BEARER_TOKEN = ""            # only if the remote requires a bearer token
+```
+
+- Each remote skill becomes a tool named `<name>__<skillId>` (e.g.
+  `agent-b__browser-readonly`). Calling it sends one message and waits for the
+  remote task to finish.
+- The client reads the remote card and **prefers its 1.0 interface**, falling
+  back to 0.3.0, so it talks to either generation without configuration. On
+  startup the daemon logs what it found, e.g.
+  `connected to an A2A agent agent="agent-b" version=1.0 skills=1`.
+
+Two limits come from squeezing A2A through the MCP tool shape:
+
+- A2A skills declare **no input schema**, so every generated tool takes a single
+  `task` string.
+- A tool call returns once, so a remote task's streaming progress is folded into
+  the final result. Returned files arrive as inline images or as links.
+
+See [MCP integration](/en/docs/features/mcp) for the rest of `mcp-servers.toml`.

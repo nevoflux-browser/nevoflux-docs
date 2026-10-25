@@ -38,6 +38,16 @@ Saving writes the provider's settings into your `config.toml`
 (`[llm.<provider>]`) and marks it active. The sidebar detects the new provider and
 switches from the welcome screen to the chat view automatically.
 
+**No API key?** Two other options are on the same tab:
+
+- **On-device** (top of the tab) downloads a model and runs it on this machine — no
+  key, no account, and conversation content does not go to a cloud model. It needs a
+  few GB of disk and works best with a GPU. See
+  [On-device models](/en/docs/configuration/local-models).
+- **Add Custom Provider** (under **Custom Providers**) connects any OpenAI-compatible
+  or Anthropic endpoint, such as a model server you already run; the key is optional.
+  See [Custom providers](/en/docs/configuration/providers#custom-providers).
+
 See [Configuration → Providers & API keys](/en/docs/configuration/providers) for the
 full list of supported providers, their default models, and the environment
 variables you can use instead of storing keys in the file.

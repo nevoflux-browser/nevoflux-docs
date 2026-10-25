@@ -23,6 +23,11 @@ description: 安装、更新与移除扩展包 —— 技能、工具、种子�
 工具二进制文件、暴露会阻止安装的策略违规项、对未经审阅的来源给出警告,并要求你再次明确确认后
 才会写入任何文件。进度与错误会内联呈现。
 
+预览还会列出扩展包仪表盘声明要发送的守护进程命令。它**目前还不会**显示
+`pack-protocol/0.2` 扩展包的站点规则、钩子或提示词替换模式 —— 这些会改变智能体的行为 ——
+请先查看该扩展包 `pack.toml` 中的 `[[components.tool_policy]]`、`[components.hooks]` 和
+`[components.prompt]`(见[扩展包](/zh/docs/packs#02-扩展包还能做什么))。
+
 这一流程也可以从设置之外、通过一个
 [`nevoflux://pack-install?src=…` 安装链接](/zh/docs/packs)发起 —— 例如来自 packhub 或项目的
 README。

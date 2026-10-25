@@ -1,0 +1,175 @@
+---
+title: A2A（Agent2Agent）
+description: 通过 A2A 协议把无头 NevoFlux 容器提供给其他 agent——v0.3 与 v1.0 两种线格式、agent card、流式任务、复用同一浏览器的上下文、返回文件——并像使用 MCP 服务器一样调用远程 A2A agent。agent v0.3.16 新增。
+---
+
+**v0.3.16** 新增：NevoFlux agent 在 **A2A（Agent2Agent）** 网络中可以双向充当对等节点：
+
+- **被调用**——无头容器发布 agent card 并接受 A2A 任务，其他 agent 可以把浏览器工作交给它。
+- **向外调用**——NevoFlux 守护进程（桌面或无头）可以像注册 MCP 服务器一样注册一个远程
+  A2A agent，把它的 skills 当作工具使用。
+
+## 从容器提供 A2A
+
+```bash
+nevoflux-agent --daemon --headless --http-addr 0.0.0.0:8080 --a2a-addr 0.0.0.0:8084
+```
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/.well-known/agent-card.json` | 发现。列出两个协议版本及其 URL。**从不鉴权。** |
+| `POST` | `/a2a` | JSON-RPC，协议 **0.3.0** |
+| `POST` | `/a2a/v1` | JSON-RPC，协议 **1.0** |
+| `GET` | `/tasks/:id/artifacts/:name` | 下载任务以链接形式返回的文件 |
+
+这些路由同时挂在 `--a2a-addr` **和主端口 `--http-addr`** 上。`--a2a-addr` 只是给 A2A
+单独一个端口（官方 Compose 文件把它发布为 `8084`），并不是"开启" A2A 的开关——任何能访问
+任务端口的人本来就能用 A2A 与它对话。如果这对你有影响，请设置 `NEVOFLUX_A2A_TOKEN`
+（见下文）。
+
+### 两个协议版本，两条路径
+
+A2A 1.0 相对 0.3 是破坏性变更：RPC 被重命名、`kind` 判别字段被移除、状态枚举改成了
+`TASK_STATE_*`。规范还规定，**没有** `A2A-Version` 请求头的请求必须按 0.3 处理，所以只支持
+1.0 的服务器会拒绝所有不发该请求头的客户端。因此每条路径只讲一个版本，card 同时声明两者：
+
+| | `/a2a`（0.3.0） | `/a2a/v1`（1.0） |
+| --- | --- | --- |
+| 发送并等待结果 | `message/send` | `SendMessage` |
+| 发送并流式（SSE） | `message/stream` | `SendStreamingMessage` |
+| 读取任务 | `tasks/get` | `GetTask` |
+| 取消 | `tasks/cancel` | `CancelTask` |
+| 重新接入流 | `tasks/resubscribe` | `SubscribeToTask` |
+| 角色 / 状态 | `user`、`completed`…… | `ROLE_USER`、`TASK_STATE_COMPLETED`…… |
+
+1.0 路径也接受驼峰式方法名（`sendMessage` 等）。发送与路径不一致的 `A2A-Version` 请求头会被
+以 `VersionNotSupported` 错误拒绝。card 本身始终以 1.0 形状提供；0.3 客户端可以在
+`supportedInterfaces` 中找到自己的端点。
+
+**不提供：**推送通知 webhook 与 `input-required` 状态——容器里没有人可以去问。
+
+```bash
+curl -s localhost:8084/.well-known/agent-card.json | jq '.supportedInterfaces'
+
+# 1.0，阻塞
+curl -s localhost:8084/a2a/v1 -H 'content-type: application/json' -d '{
+  "jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{
+    "messageId":"m1","role":"ROLE_USER","contextId":"demo",
+    "parts":[{"text":"open example.com and report the title"}]}}}' \
+  | jq '.result.status.state, .result.status.message.parts[0].text'
+
+# 0.3，阻塞
+curl -s localhost:8084/a2a -H 'content-type: application/json' -d '{
+  "jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{
+    "kind":"message","messageId":"m1","role":"user","contextId":"demo",
+    "parts":[{"kind":"text","text":"open example.com and report the title"}]}}}'
+```
+
+agent 仓库在 `deploy/headless/examples/a2a-client-v1.sh` 与 `a2a-client-v03.sh` 提供了现成
+的客户端脚本；把两者对照着读，是了解 1.0 改了什么的最快方式。
+
+### 调用方能控制什么、不能控制什么
+
+调用方发送提示词，以及可选的 `contextId`。**mode、profile 与 policy 来自容器的环境变量**
+（`NEVOFLUX_TASK_*`、`NEVOFLUX_POLICY_*`），绝不来自请求：如果调用方能设置
+`allow_shell`，任何能访问该端口的人都能在容器里执行 shell。
+
+card 中的 `skills` 由该配置生成，因此调用方能*看到*能力，却无法*改变*它：
+
+| 配置 | 声明的 skill |
+| --- | --- |
+| 设置了 `NEVOFLUX_HEADLESS_SCRIPT` | `fixed-script`——确定性流水线，无 LLM |
+| 默认策略 | `browser-readonly`——导航、读取、截图；无 shell、不写文件 |
+| 开启了 `NEVOFLUX_POLICY_ALLOW_SHELL` 和/或 `_ALLOW_FS_WRITE` | `browser-extended`，并写明额外权限 |
+
+card 中绝不包含令牌、配置名或密钥。
+
+### 上下文
+
+一个 `contextId` 对应一个 **task-flow**：同一上下文中的各轮复用同一个浏览器、同一个配置
+克隆以及到目前为止的对话（之前的轮次会回放进提示词）。无论 `NEVOFLUX_SESSION_MODE` 设成
+什么都是如此——发送了 `contextId` 的调用方绝不应悄无声息地得到一个无状态的 agent。
+
+- **一次一个上下文。** 已绑定上下文时，指定*另一个* `contextId` 的消息会被拒绝
+  （`UnsupportedOperation`）——请为它另起一个容器。**未**指定 `contextId` 的消息会加入已绑定
+  的上下文（或新开一个）。
+- **空闲超时。** 上下文在 `NEVOFLUX_A2A_CONTEXT_IDLE_SECS`（默认 1800）秒无活动后释放，
+  或在任务端口上调用 `POST /session/close` 立即释放。
+- **历史有上限且易失。** 只回放最近 20 轮——历史是每次提示词的一部分，无上限的上下文会让
+  每轮 token 成本悄悄增长而调用方毫无察觉。历史保存在内存中：重启容器即丢失。
+
+由于同一上下文中的各轮共享 cookie 与存储，与[会话模式](/zh/docs/deployment/task-api#会话模式)
+同样的注意事项适用：一个上下文只用于某一个可信调用方的顺序工作。
+
+### 流式、断开与队列
+
+`message/stream` / `SendStreamingMessage` 返回 SSE：先是任务快照，然后是 `working` 状态
+更新（携带脚本后端发出的文本），最后是 `completed` 或 `failed` 终态更新。
+
+> **为 A2A 设置 `NEVOFLUX_WALL_CLOCK_SECS`。** 与 OpenAI 端点不同，客户端断开时 A2A 流
+> **不会**取消任务——客户端可以用 `tasks/resubscribe` / `SubscribeToTask` 重新接入。任务
+> 队列是串行的，没有预算时，一个消失的客户端就能占住队列。未设置该变量时，A2A 流式任务
+> 回落到 **900 秒**，守护进程会记录一条警告。
+
+重新订阅回放的是任务的**状态变迁**，而不是你离开期间它流式输出的文本。阻塞的
+`message/send` / `SendMessage` 最多等待 600 秒任务结束。
+
+`tasks/cancel` / `CancelTask` 会把任务报告为 `canceled`；与 `DELETE /tasks/:id` 一样，它是
+在队列层面标记任务，而不会中断已在运行的尝试。
+
+### 返回的文件
+
+任务留在其工作区中的文件会作为产物（artifact）出现在完成的任务上：
+
+- 单个不超过 `NEVOFLUX_A2A_INLINE_MAX_BYTES`（默认 262144 = 256 KiB）的文件以 base64 内联
+  ——每个响应内联总量最多 1 MiB；
+- 更大的文件以指向 `GET /tasks/:id/artifacts/:name` 的 `uri` 返回。
+
+产物链接在设置了 `NEVOFLUX_A2A_PUBLIC_URL` 时以它为基址，否则取自请求的 `Host` 头（以及
+`X-Forwarded-Proto`）。在会改写 `Host` 的反向代理之后，请设置公开 URL，否则调用方拿到的
+链接无法访问。产物路由只提供该任务工作区中的普通文件名；路径穿越会被拒绝。
+
+### 认证
+
+| 环境变量 | 作用 | 默认值 |
+| --- | --- | --- |
+| `NEVOFLUX_A2A_TOKEN` | 在 `/a2a`、`/a2a/v1` 与产物路由上要求 `Authorization: Bearer <token>`。card 仍然公开，并声明需要 Bearer 令牌。 | 未设置——**无认证** |
+| `NEVOFLUX_A2A_PUBLIC_URL` | card 与产物链接使用的对外可达基址 | 请求的 `Host` |
+| `NEVOFLUX_A2A_CONTEXT_IDLE_SECS` | 空闲多少秒后释放上下文 | `1800` |
+| `NEVOFLUX_A2A_INLINE_MAX_BYTES` | 不超过此大小的产物内联；更大的给 URI | `262144` |
+| `NEVOFLUX_WALL_CLOCK_SECS` | 每任务预算；也覆盖 A2A 流式的兜底值 | 未设置（A2A 流式：900 秒） |
+
+> 该令牌只保护 **A2A** 路由。同一端口上的任务 API（`/tasks`）、OpenAI / Anthropic 端点
+> 以及 `/session/close` 仍然无需认证——设置了令牌再发布 `--http-addr`，并不会让该端口的
+> 其余部分变成私有。
+
+## 调用远程 A2A agent
+
+任何 NevoFlux 守护进程都能把远程 A2A agent 的 skills 当作工具使用。在 `mcp-servers.toml`
+（Windows 上为 `%APPDATA%\nevoflux\`，其他系统为 `~/.config/nevoflux/`）中以
+`server_type = "a2a"` 注册：
+
+```toml
+[[servers]]
+name = "agent-b"
+server_type = "a2a"
+url = "http://other-host:8084"   # 它的基址或 agent-card URL
+enabled = true
+
+[servers.env]
+A2A_BEARER_TOKEN = ""            # 仅当远端要求 Bearer 令牌时填写
+```
+
+- 每个远程 skill 会变成一个名为 `<name>__<skillId>` 的工具（如
+  `agent-b__browser-readonly`）。调用它会发送一条消息，并等待远程任务结束。
+- 客户端读取远端 card，**优先使用其 1.0 接口**，回落到 0.3.0，因此无需配置即可与任一代
+  通信。启动时守护进程会记录发现结果，例如
+  `connected to an A2A agent agent="agent-b" version=1.0 skills=1`。
+
+把 A2A 塞进 MCP 工具形状带来两个限制：
+
+- A2A skill **没有输入 schema**，因此每个生成的工具只接受一个 `task` 字符串。
+- 工具调用只返回一次，所以远程任务的流式进度会折叠进最终结果。返回的文件以内联图片或链接
+  形式到达。
+
+`mcp-servers.toml` 的其余内容见 [MCP 集成](/zh/docs/features/mcp)。

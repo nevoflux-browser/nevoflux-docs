@@ -1,4 +1,4 @@
 {
   "title": "Headless (Docker)",
-  "pages": ["index", "docker", "docker-compose", "task-api"]
+  "pages": ["index", "docker", "docker-compose", "task-api", "llm-apis", "mcp-endpoint", "a2a", "remote-control"]
 }

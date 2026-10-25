@@ -9,7 +9,7 @@ description: 拉取或构建 nevoflux/agent 镜像——构建参数、运行模
 **amd64 与 arm64**，因此 Apple Silicon 或 Graviton 宿主拉到的是原生镜像：
 
 ```bash
-docker pull nevoflux/agent:0.3.13     # 指定某个发行版
+docker pull nevoflux/agent:0.3.16     # 指定某个发行版
 docker pull nevoflux/agent:latest     # 最新已发布的版本
 ```
 
@@ -17,7 +17,7 @@ docker pull nevoflux/agent:latest     # 最新已发布的版本
 只在该发行版**正式公开之后**才推送——因此只要标签存在，就一定对应一个你能下载到的
 发行版。
 
-> **生产环境请固定版本。** 下次发布时 `latest` 会在你脚下发生变化，而 `0.3.13` 不会。
+> **生产环境请固定版本。** 下次发布时 `latest` 会在你脚下发生变化，而 `0.3.16` 不会。
 
 ## 自行构建
 
@@ -33,8 +33,8 @@ docker build -t nevoflux/agent:custom deploy/headless      # amd64 或 arm64
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `AGENT_VERSION` | `latest` | agent 发行版标签——**带**前导 `v`（如 `v0.3.13`）。 |
-| `BROWSER_VERSION` | `latest` | browser 发行版标签——**不带**前导 `v`（如 `0.3.13`）。 |
+| `AGENT_VERSION` | `latest` | agent 发行版标签——**带**前导 `v`（如 `v0.3.16`）。 |
+| `BROWSER_VERSION` | `latest` | browser 发行版标签——**不带**前导 `v`（如 `0.3.16`）。 |
 | `TARGETARCH` | 宿主架构 | `amd64` → `x86_64` 资产，`arm64` → `aarch64`。由 `docker buildx --platform` 设定。 |
 | `PACK_REPOS` | 空 | 空格分隔、要打包内置的 pack（见[内置 packs](#内置-packs)）。 |
 | `INSTALL_GBRAIN` | `1` | 安装并启用 GBrain 知识库（设为 `0` 则完全跳过）。 |
@@ -45,8 +45,8 @@ docker build -t nevoflux/agent:custom deploy/headless      # amd64 或 arm64
 > **不可复现**。请同时固定两者：
 >
 > ```bash
-> docker build -t nevoflux/agent:0.3.13-custom \
->   --build-arg AGENT_VERSION=v0.3.13 --build-arg BROWSER_VERSION=0.3.13 \
+> docker build -t nevoflux/agent:0.3.16-custom \
+>   --build-arg AGENT_VERSION=v0.3.16 --build-arg BROWSER_VERSION=0.3.16 \
 >   deploy/headless
 > ```
 
@@ -128,13 +128,42 @@ docker run --rm -p 8080:8080 \
   nevoflux/agent:latest
 ```
 
-- `/work` 是每个任务的 `result.json` + `debug-bundle/` + 产物的落盘位置。
+- `/work` 是镜像的工作目录，也是声明的卷。注意任务结果（`result.json`、`debug-bundle/`、
+  产物）写在 `NEVOFLUX_PROFILE_WORK` 下的任务工作区中，而镜像让它保持默认值
+  `/tmp/nevoflux-profiles`——见[任务 API → 状态与结果](/zh/docs/deployment/task-api#状态与结果)。
 - `base-profiles`（只读）存放预先登录的模板配置，按任务克隆。
 - 容器以只读运行；守护进程只写入上面的 tmpfs 挂载。
+- 自 v0.3.14 起，镜像也把 `/var/nevoflux/data` 声明为 `VOLUME`（[远程控制端](/zh/docs/deployment/remote-control)
+  需要它持久化）。对任务服务请继续像上面那样把它挂为 tmpfs——否则 `docker run` 会为它创建
+  一个匿名卷。
 
-默认命令为 `--daemon --headless --http-addr 0.0.0.0:8080`，它在同一端口也提供
-OpenAI 兼容的 `/v1/chat/completions`。要把 OpenAI / MCP / ACP 拆到各自端口，请覆盖命令
-——见[任务 API 与接口](/zh/docs/deployment/task-api#替代接口)。
+默认命令为 `--daemon --headless --http-addr 0.0.0.0:8080`。这一个端口同时提供任务 API
+**以及** OpenAI（Chat Completions、Responses、模型列表）、Anthropic Messages 与 A2A 端点
+——除非设置 `NEVOFLUX_A2A_TOKEN`（且它只覆盖 A2A 路由），这些都无需认证。只在所有调用方
+都可信的地方发布它。要加上 MCP、ACP、管理 API 或专用端口，请覆盖命令——见
+[任务 API → 接口与端口](/zh/docs/deployment/task-api#接口与端口)。
+
+## 浏览器引擎
+
+自 **v0.3.15** 起，`linux/amd64` 发行版二进制——因而 amd64 镜像——内置了一个**进程内浏览器
+引擎**（nevoflux-skiff），并默认使用它：浏览器工具先在守护进程内提供，只有当该引擎做不到
+所要求的事情时，任务才会升级到真正的无头浏览器。`linux/arm64` 二进制没有内置它，始终使用
+真正的浏览器。
+
+`NEVOFLUX_BROWSER_BACKEND` 可显式选择：
+
+| 值 | 引擎 |
+| --- | --- |
+| 未设置 / `auto` | 先进程内引擎，必要时升级到真实浏览器（amd64 默认） |
+| `browser`（或 `nevoflux`） | 真正的无头浏览器，不尝试进程内引擎 |
+| `extension` | 浏览器扩展路径，即 v0.3.15 之前的行为（arm64 默认） |
+| `skiff` | 只用进程内引擎——它做不到的就失败（用于衡量覆盖面） |
+
+当前构建无法满足的值（例如在 arm64 上设 `skiff`）或拼写错误，会记录一条错误并回落到
+`extension`。进程内引擎的实际影响：由它处理的任务不会启动浏览器，因此在 VNC 上没有东西
+可看；MCP 也会在没有[会话模式](/zh/docs/deployment/mcp-endpoint#内置浏览器工具需要会话模式)
+的情况下列出 `browser_*` 工具。若需要两种架构行为一致，请设置
+`NEVOFLUX_BROWSER_BACKEND=browser`。
 
 ## 实时观看（VNC / noVNC）
 
@@ -173,9 +202,18 @@ docker run --rm -p 8080:8080 -p 6080:6080 -p 5900:5900 \
 | `HF_HUB_OFFLINE` | `1` | 向量嵌入离线运行（模型已内置）。 |
 | `MOZ_DISABLE_CONTENT_SANDBOX` | `1` | 容器内浏览器所需。 |
 
+可以自行设置的运行时开关：
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `NEVOFLUX_BRAIN_ENABLED` | *（v0.3.14）* 设为 `0` / `false` / `no` 可在不重新构建的情况下为该容器关闭 GBrain：entrypoint 跳过 brain 初始化（否则启动时可能最多等待 40 秒），守护进程不启动 `gbrain serve`，也不向 agent 提供 brain 工具。`1` / `true` / `yes` 强制开启；未设置则遵循 `config.toml`。 |
+| `NEVOFLUX_CONFIG` | *（v0.3.16）* 用来替代 `~/.config/nevoflux/config.toml` 的 `config.toml` 路径——例如挂载在 `/etc/nevoflux/config.toml` 的只读文件。空值视为未设置。 |
+| `NEVOFLUX_PROFILE_WORK` | 每任务配置克隆与任务工作区的位置（默认 `/tmp/nevoflux-profiles`）。 |
+| `NEVOFLUX_BROWSER_BACKEND` | 浏览器引擎——见[上文](#浏览器引擎)。 |
+
 ## 启动顺序
 
 entrypoint（在 `tini` 之下）依次运行：**dbus** → **Xvfb** →*（可选 VNC）*→
-**GBrain 初始化** → **守护进程**。在守护进程模式下，它会先后台启动守护进程，待其开始
+**GBrain 初始化**（`NEVOFLUX_BRAIN_ENABLED` 关闭时跳过）→ **守护进程**。在守护进程模式下，它会先后台启动守护进程，待其开始
 监听后安装内置 pack，然后交接控制权（转发 `SIGTERM`/`SIGINT` 以干净关闭）。非守护进程
 调用（如 `config`、`pack`）则直接运行。

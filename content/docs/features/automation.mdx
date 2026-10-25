@@ -43,6 +43,18 @@ recent runs (`loop_evolve`); you then **accept or reject** the proposal
 > auto**. Below that the call is refused, rather than minting a loop whose
 > iterations quietly run tools the session itself may not. `mode: chat` is
 > read-only and needs no grant.
+>
+> Since v0.3.16 the iteration's tool list is also enforced when a tool runs, not
+> only when the model is told what it has: a call to a tool the iteration was not
+> offered — remembered from an earlier turn, or guessed — is refused. A
+> [pack site rule](/en/docs/packs/development#site-rules--componentstool_policy)
+> that would *ask* about a call refuses it in a loop, because there is nobody to
+> ask. [Schedules](/en/docs/features/scheduling#scheduled-tasks-schedule) are
+> stricter still: creating one needs **Full auto**.
+
+> **On-device model active?** While the [on-device model](/en/docs/configuration/local-models#what-changes-in-local-mode)
+> is in use, loops **skip** their fires (recorded with reason `local_mode`) rather
+> than run on a small local context.
 
 > **Loops vs. schedules.** Loops are for fast, event-driven repetition (down to
 > minutes). For calendar-style jobs at an hourly-or-slower cadence, use
@@ -55,8 +67,5 @@ the open web independently of the page you're on.
 
 ## Voice (TTS / STT)
 
-NevoFlux includes text-to-speech and transcription:
-
-- **ElevenLabs** (cloud TTS), **Kokoro** (local TTS), and **Whisper**
-  (speech-to-text). Configure voices/keys under the `[tts.*]` sections of
-  [`config.toml`](/en/docs/configuration).
+Speaking to the agent and hearing its replies are covered on their own page:
+see [Voice](/en/docs/features/voice).

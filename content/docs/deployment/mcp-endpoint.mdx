@@ -1,0 +1,257 @@
+---
+title: MCP endpoint & admin API
+description: The headless MCP-over-HTTP endpoint — built-in browser and computer tools, custom tools written as Python scripts, reload and list_changed — and the token-protected admin API that deploys scripts and base profiles.
+---
+
+With `--mcp-addr`, a headless container is an **MCP server** reachable over
+HTTP. Since **v0.3.14** it runs on the official Rust MCP SDK (rmcp) with the
+**Streamable HTTP** transport, and serves far more than the single
+`run_browser_task` tool it started with: the daemon's own browser and computer
+tools, custom tools you write as Python scripts, and a pair of meta tools for
+reloading them.
+
+```bash
+nevoflux-agent --daemon --headless --http-addr 0.0.0.0:8080 --mcp-addr 0.0.0.0:8082
+# MCP endpoint: http://<host>:8082/mcp
+```
+
+`/mcp` is served **only** on `--mcp-addr` — not on the main `--http-addr` port.
+
+> Not to be confused with **`--mcp`** (no `--daemon`), the stdio MCP server used
+> for [Claude Code integration](/en/docs/features/mcp). This page is about the
+> headless HTTP endpoint.
+
+## Connecting a client
+
+Use any MCP client that speaks Streamable HTTP and point it at `/mcp`. Protocol
+version negotiation and session handling come from the SDK, so a plain
+one-shot `curl` of `tools/call` no longer works — the client has to
+`initialize` first and send `Accept: application/json, text/event-stream`.
+For Claude Code, for example:
+
+```bash
+claude mcp add --transport http nevoflux-headless http://box.internal:8082/mcp
+```
+
+### Allowed hosts
+
+The transport validates the `Host` header (DNS-rebinding protection) and by
+default answers only to `localhost`, `127.0.0.1` and `::1`. A client on another
+machine sends the server's own address as `Host` and gets `403` no matter how the
+network is set up. Add the names clients use:
+
+```bash
+NEVOFLUX_MCP_ALLOWED_HOSTS=box.internal,10.0.0.5:8082
+```
+
+Entries are comma-separated, may include a port, and are **added** to the
+loopback names rather than replacing them.
+
+> **`/mcp` has no authentication.** Allowing a host name does not authenticate
+> anyone; it only stops the endpoint refusing legitimate remote clients. Anyone
+> who can reach the port can call every tool below. Keep it on a private network
+> or behind an authenticating proxy.
+
+## What it serves
+
+Tools come from four sources. If two sources offer the same name, the earlier
+one in this order wins and the later one is dropped from the list, so listing and
+calling never disagree.
+
+| Source | Tools | Notes |
+| --- | --- | --- |
+| **Task** | `run_browser_task` | Runs a whole natural-language task through the queue (`task` argument) and returns its result. Mode / profile / policy come from the `NEVOFLUX_TASK_*` / `NEVOFLUX_POLICY_*` env defaults. Waits up to 600 s. |
+| **Built-in** | `browser_*`, `computer_*` | The daemon's own tools, executed directly. Only tools the executor can actually run are listed. |
+| **Script** | `<script>__<tool>` | Custom tools from Python files — see [Script tools](#script-tools). |
+| **Meta** | `nevoflux__reload`, `nevoflux__list_scripts` | Reload script tools or the session browser; list what loaded and what was skipped. |
+
+### Built-in browser tools need session mode
+
+`browser_*` tools act on a browser that must survive between calls. Without
+`NEVOFLUX_SESSION_MODE=1` each task gets its own short-lived browser, so these
+tools are **not listed** at all rather than listed and guaranteed to fail. With
+session mode on, the daemon **pre-warms** the shared browser at startup, so the
+first tool call does not have to wait for — or fail on — a cold browser.
+
+The exception is a daemon whose browser tools are served by the **in-process
+engine** (the default on `linux/amd64` images since v0.3.15 — see
+[Docker image → Browser engine](/en/docs/deployment/docker#browser-engine-amd64-vs-arm64)):
+that engine outlives a single call by construction, so `browser_*` is listed
+without session mode and no browser is pre-warmed.
+
+The listed browser tools are `browser_navigate`, `browser_click`,
+`browser_screenshot`, `browser_type`, `browser_fill`, `browser_get_content`,
+`browser_eval_js`, `browser_wait_for`, `browser_scroll`, `browser_get_element`,
+`browser_query_all`, `browser_get_elements`, `browser_click_by_id`,
+`browser_fill_by_id`, `browser_type_by_id` and `browser_get_markdown`.
+`computer_*` tools (screenshot, mouse, keyboard on the container's virtual
+display) are listed regardless of session mode.
+
+`run_browser_task` runs in the **container's** browser, not in whatever browser
+the MCP client is otherwise driving — it cannot see that client's tabs or
+session.
+
+> **Direct tools bypass the task policy.** The per-task `policy`
+> (`allow_shell`, `allow_upload`, `domain_allowlist`, …) governs what the *agent*
+> may do inside a task. A built-in tool called over `/mcp` is not a task, so that
+> policy does not apply — `browser_eval_js` runs arbitrary JavaScript in the
+> page, and `computer_*` drives the display. The container boundary and the
+> reachability of the port are what limit this.
+
+## Script tools
+
+Custom tools are Python files in the directories named by
+`NEVOFLUX_MCP_TOOLS` (a path list — `:`-separated on Linux). Unset means no
+script tools, which is the default.
+
+```python
+# /opt/nevoflux/tools/jira.py  →  tools  jira__search, jira__create
+def describe():
+    return [
+        {"name": "search",
+         "description": "Search the issue tracker",
+         "inputSchema": {"type": "object",
+                         "properties": {"query": {"type": "string"}},
+                         "required": ["query"]}},
+        {"name": "create", "description": "Open an issue"},
+    ]
+
+def search(arguments):
+    nav = browser_navigate(url="https://tracker.example/search?q=" + arguments["query"])
+    return browser_get_markdown(tab_id=nav["tab_id"])["markdown"]
+
+def create(arguments):
+    ...
+```
+
+- **`describe()`** returns one declaration (a dict) or a list of them, each with
+  `name`, optional `description` and optional `inputSchema` (defaults to an empty
+  object schema). It runs **at load time only**, with a 5-second limit — never on
+  `tools/list`.
+- **The file stem is a namespace**: `jira.py` exporting `search` becomes
+  `jira__search`, so a script can never shadow a built-in name. The stem must
+  match `^[a-z][a-z0-9_]{0,31}$`; if two directories contain the same stem, the
+  first directory wins.
+- **A call** runs the function named after the tool with the arguments as one
+  dict. A script may instead define a single `call(name, arguments)` dispatcher.
+  A returned string is the result as-is; anything else is serialised as JSON.
+- Scripts run in the same **sandboxed interpreter** (Monty) as
+  [fixed-script mode](/en/docs/deployment/task-api#fixed-script-mode-no-llm),
+  with the browser tools in scope when a browser is connected — which in practice
+  means `NEVOFLUX_SESSION_MODE=1`. Without one, a script calling a browser tool
+  fails with an error that says so.
+- **Nothing is dropped silently.** A file that fails to load (bad name, missing
+  `describe()`, a declaration without `name`, a schema that is not an object, …)
+  is reported with its reason in the logs, in `nevoflux__list_scripts` and in
+  `GET /admin/scripts`.
+
+### Reloading and `list_changed`
+
+Scripts are scanned once at startup. To pick up changes:
+
+- call the MCP tool **`nevoflux__reload`** — `target` is `scripts` (default),
+  `profile` or `all`; `name` restricts a script reload to one file stem. The
+  `profile` target discards the reused session browser so the next task
+  re-clones its base profile.
+- or use the [admin API](#admin-api).
+
+The server advertises `tools.listChanged`. After a `nevoflux__reload` call that
+changes the number of tools, it sends `notifications/tools/list_changed` to that
+client so it re-fetches the list. Changes made through the admin API do not
+notify connected clients; they see the new list the next time they call
+`tools/list`.
+
+If every script directory becomes unreadable during a reload, the previous set
+of tools is kept and the reload reports an error, rather than wiping the
+catalogue.
+
+## Admin API
+
+The **write side** — deploying scripts and base profiles — is a separate,
+token-protected surface on its own port, so you can bind it to localhost or a
+private network while `/mcp` and the task API face outward.
+
+```bash
+NEVOFLUX_ADMIN_TOKEN=$(openssl rand -hex 32) \
+nevoflux-agent --daemon --headless --http-addr 0.0.0.0:8080 \
+  --mcp-addr 0.0.0.0:8082 --admin-addr 127.0.0.1:8086
+```
+
+> **No token, no admin API.** If `--admin-addr` is given without
+> `NEVOFLUX_ADMIN_TOKEN`, the routes are not mounted at all and a warning is
+> logged — an unauthenticated endpoint that writes executable code to the server
+> is worse than none. Every request needs `Authorization: Bearer <token>`
+> (compared in constant time).
+
+### Scripts
+
+| Method | Path | Effect |
+| --- | --- | --- |
+| `GET` | `/admin/scripts` | Directories, loaded tools (name + source file), skipped files with reasons. |
+| `GET` | `/admin/scripts/:name` | The deployed source of `<name>.py`, verbatim. |
+| `PUT` | `/admin/scripts/:name` | Write the body as `<name>.py` into the **first** `NEVOFLUX_MCP_TOOLS` directory (atomic rename), reload, and return `{name, tools, skipped}` for that script. `409` if `NEVOFLUX_MCP_TOOLS` is unset. |
+| `POST` | `/admin/scripts/:name/validate` | Run `describe()` on the body **without deploying** it; same response shape as `PUT`. A broken script is a `200` with a reason, not a `4xx`. |
+| `DELETE` | `/admin/scripts/:name` | Remove the file and reload. |
+| `POST` | `/admin/reload` | `{"target":"scripts"\|"profile"\|"all","name":…}` — the same reload as the MCP tool, for operators and CI. |
+
+```bash
+H="Authorization: Bearer $NEVOFLUX_ADMIN_TOKEN"
+curl -s -H "$H" -X POST --data-binary @jira.py localhost:8086/admin/scripts/jira/validate
+curl -s -H "$H" -X PUT  --data-binary @jira.py localhost:8086/admin/scripts/jira
+# → {"name":"jira","tools":["jira__search","jira__create"],"skipped":[]}
+```
+
+`<name>` must match the same `^[a-z][a-z0-9_]{0,31}$` rule as a file stem, which
+also rules out path traversal.
+
+The directory you deploy into must be **writable** inside the container. The
+shipped image has a read-only root filesystem, so mount a volume there (and keep
+in mind that whoever holds the admin token can put code in it).
+
+### Base profiles
+
+Base profiles (the login templates every task clones) can be managed the same
+way, as filtered `tar.gz` archives:
+
+| Method | Path | Effect |
+| --- | --- | --- |
+| `GET` | `/admin/profiles` | Profiles under `NEVOFLUX_BASE_PROFILES` with sizes, and whether export is enabled. |
+| `PUT` | `/admin/profiles/:name` | Replace profile `<name>` with the uploaded `tar.gz` (atomic swap; a task cloning at that moment never sees half a profile). Returns `{name, written, skipped}`. |
+| `DELETE` | `/admin/profiles/:name` | Delete profile `<name>`. |
+| `GET` | `/admin/profiles/:name/export` | Download profile `<name>` as `tar.gz`. **Only mounted when `NEVOFLUX_PROFILE_EXPORT=1`.** |
+
+```bash
+# pack a profile directory (archive paths relative to the profile root) and upload it
+tar -C ~/profiles/gemini -czf gemini.tgz .
+curl -s -H "$H" -X PUT --data-binary @gemini.tgz localhost:8086/admin/profiles/gemini
+```
+
+- **Filtered both ways.** Regenerable or telemetry data — caches, crash reports,
+  session-restore backups, favicons and history (`places.sqlite`, which also
+  holds bookmarks), DRM plugins, lock files — is dropped on upload and export.
+  Anything that can hold login state (cookies, `key4.db`, `logins.json`,
+  `storage/default/`) is kept; unknown entries are kept too.
+- **Unpacking is confined.** Symlinks and other special entries are skipped,
+  paths that escape the target are rejected (`400`), and size limits apply:
+  `NEVOFLUX_PROFILE_MAX_UPLOAD_MB` (default 200) for the archive and
+  `NEVOFLUX_PROFILE_MAX_UNPACKED_MB` (default 500) for its contents (`413` when
+  exceeded).
+- **The base-profiles mount must be writable** for `PUT` / `DELETE` — the
+  shipped Compose file mounts it read-only.
+
+> **Export is off by default for a reason.** An exported profile contains the
+> saved passwords (`key4.db`, `logins.json`) and session cookies of every site
+> it is logged in to. The admin token alone is not considered enough; you must
+> also set `NEVOFLUX_PROFILE_EXPORT=1`, and should turn it off again afterwards.
+
+## Environment reference
+
+| Env var | Effect | Default |
+| --- | --- | --- |
+| `NEVOFLUX_MCP_TOOLS` | Script-tool directories (path list) | unset — no script tools |
+| `NEVOFLUX_MCP_ALLOWED_HOSTS` | Extra `Host` names `/mcp` answers to (comma-separated) | loopback only |
+| `NEVOFLUX_SESSION_MODE` | `1` lists `browser_*` tools and pre-warms the shared browser (not needed with the in-process engine) | off |
+| `NEVOFLUX_ADMIN_TOKEN` | Bearer token for the admin API; required to mount it | unset — admin API off |
+| `NEVOFLUX_PROFILE_EXPORT` | `1` mounts the profile export route | off |
+| `NEVOFLUX_PROFILE_MAX_UPLOAD_MB` | Max uploaded profile archive size | `200` |
+| `NEVOFLUX_PROFILE_MAX_UNPACKED_MB` | Max unpacked profile size | `500` |

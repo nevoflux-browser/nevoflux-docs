@@ -1,29 +1,50 @@
 ---
-title: Remote control from your phone
-description: Pair a phone with a running NevoFlux session over an end-to-end encrypted channel, and drive the same conversation — tools, permissions and all — from anywhere. New in agent v0.3.13.
+title: Remote control
+description: Drive your NevoFlux sessions from a phone, keep a phone paired across restarts, or let another AI agent use your browser and hand NevoFlux whole tasks — all over end-to-end encrypted channels. Updated for agent v0.3.16.
 ---
 
-New in **v0.3.13**, you can hand a running sidebar session to your phone. The
-conversation, its browser, its tools and its permission prompts all stay on your
-computer — the phone is a remote head onto the session you already have open.
+Remote control lets something that is *not* sitting at your computer work with
+the NevoFlux running on it. The conversation, the browser, the tools and the
+permission prompts all stay on your machine; what is remote is the head that
+types into it and watches it.
 
-> **It is the *same* session, not a second one.** The phone doesn't get its own
-> agent; it types into the conversation that is open in your sidebar, and sees
+> **It is the *same* session, not a second one.** A phone never gets its own
+> agent. It types into a conversation that exists on your computer and sees
 > exactly what that conversation produces.
 
-## Pair a device
+There are three ways in, and they differ in how long they last and in who is on
+the other end:
 
-Type the slash command in the sidebar:
+| Command | Who connects | Lasts | Since |
+| --- | --- | --- | --- |
+| `/remote-control` | A phone (or any browser), onto **one** session | Until that session's window closes | v0.3.13 |
+| `/pair-device` | A phone, onto **every** session on this machine | Until you unpair it — survives restarts | **v0.3.16** |
+| `/pair-agent` | Another **AI agent** (first client: Muse), over MCP | Until you unpair it — survives restarts | **v0.3.16** |
+
+All three type into the sidebar and are listed in its `/` menu. All three need
+this machine to be signed in to a nevoflux.app account, and the other end must
+sign in to the **same** account — the relay refuses anyone else.
+
+## Signing in
+
+The first time you run `/remote-control`, the agent starts a device sign-in: it
+opens the nevoflux.app approval page with the code already filled in. Sign in if
+the page asks (the code survives the sign-in), click **Approve**, and the agent
+carries on by itself. It waits up to 30 minutes.
+
+`/pair-device` and `/pair-agent` do not start a sign-in themselves. If the machine
+is not signed in, or the sign-in has expired, they say so — run `/remote-control`
+once to sign in, then run them again.
+
+## Open one session: `/remote-control`
+
+Type the command in the conversation you want to hand over:
 
 ```text
 /remote-control
 ```
 
-**If you aren't signed in to nevoflux.app yet**, the agent starts a device sign-in
-first: it prints a verification link and a short user code, you approve it in a
-browser, and it carries on by itself. It waits up to 30 minutes for you.
-
-**Once signed in**, it replies with a connect link and a pairing code:
+Once signed in, it replies with a connect link and a pairing code:
 
 ```text
 ✅ Remote control is open.
@@ -35,56 +56,314 @@ Then enter the pairing code:
   <pairing code>
 ```
 
-Open the link on your phone, sign in to the same account, and enter the code. The
-phone is now attached to that conversation.
+Open the link on your phone, sign in, enter the code, and the phone is attached
+to that conversation.
 
-> **Keep the session open.** Closing the window ends the remote channel — the
-> desktop session is the thing being controlled, so there is nothing left to drive
-> once it's gone.
+This is the light-weight option: nothing is remembered. Closing the window ends
+the channel, and a restart leaves the phone on a channel this machine will never
+dial again. Use it for "I'm stepping away for an hour"; use `/pair-device` for a
+phone you want to keep.
 
-## What the phone can do
+The chat mode and [Agent execution tier](/en/docs/settings/general#agent-execution-tiers)
+are snapshotted from the sidebar when `/remote-control` runs, and every remote
+turn inherits them verbatim. The phone *displays* both and can change neither —
+so if you plan to be away, pick the tier **before** you run the command.
+
+## Pair a phone: `/pair-device`
+
+*New in v0.3.16.*
+
+```text
+/pair-device
+```
+
+The sidebar shows a QR code, the link it encodes
+(`https://portal.nevoflux.app/d/<id>/pair`) and a pairing code. Then, on the
+phone:
+
+1. Scan the QR code, or open the link.
+2. **On iPhone, add it to the Home Screen first** and open it from there. The
+   home-screen app and Safari keep separate storage, so a pairing made in Safari
+   leaves the app knowing nothing. (Notifications on iPhone also only work from
+   the home-screen app.)
+3. Enter the pairing code and, optionally, a name for this machine.
+
+The QR code carries the link and **never** the code. The code is what the channel
+keys are derived from, so keeping it out of URLs keeps it out of browser history
+and referrers — and it means pairing takes both reaching the link and reading the
+screen. The code is shown **once**: what the machine stores is the keys derived
+from it, so there is nothing left to show again. If you lose it before typing it,
+unpair and pair again.
+
+From then on the pairing survives restarts. The machine dials it again every time
+it starts.
+
+### What the paired phone shows
+
+The phone app lists **every session on this machine**, the ones waiting on you
+first, each marked **Waiting**, **Plan**, **Running** or **Idle**:
+
+- **Answer from the list.** A session blocked on a permission prompt shows the
+  same question the desktop dialog shows, with **Allow** and **Deny** buttons.
+  The answer becomes the same message as answering on the desktop, so it settles
+  the prompt exactly once, wherever it is answered first.
+- **Open a session** to chat in it. The recent part of the conversation is
+  replayed first — including what you typed at the desk — so you approve things
+  with the context in front of you, not just the question. One conversation is
+  shown at a time; switching to another moves the channel rather than opening a
+  new one.
+- **Notifications.** Once you enable them, the machine can wake the phone when a
+  session stops to ask you something. The push is sent by your machine itself;
+  its payload carries only a session id and the kind of question, because a lock
+  screen is read by whoever is holding the phone.
+
+A paired phone gets exactly what **each session** already has. When you open a
+session, its chat mode and execution tier are re-read from the desktop for that
+session — never carried over from the session you were looking at before — so a
+phone cannot raise a session's permissions by switching to it.
+
+If the list stays empty while the app says the machine is answering but nothing
+it sends can be read, the pairing code was mistyped: unpair it on the desktop and
+pair again.
+
+### See and revoke what is paired: `/devices`, `/unpair`
+
+```text
+/devices
+/unpair <id>
+```
+
+`/devices` lists every phone and agent paired with this machine with a short
+8-character id, when it was paired, and — for a phone — whether it can still be
+woken (a phone that "cannot be woken" is one whose notifications quietly
+stopped). `/unpair <id>` takes the short id (a prefix is enough if it is
+unambiguous) and revokes the pairing: its channels close, its keys are deleted,
+and its push subscription goes with it. Pairing again needs a new code.
+
+Because a pairing survives restarts by design, **a lost or sold phone keeps its
+way in until you unpair it.** Make `/devices` part of losing a phone.
+
+## What a phone can do
+
+These apply to both `/remote-control` and an opened session on a paired phone.
 
 | From the phone | Notes |
 | --- | --- |
 | **Send a turn** | Goes into the same conversation, with your local tab context attached |
-| **Watch it work** | Streamed replies, thinking, tool calls, and artifacts as they happen |
-| **Stop generation** | The portal's stop button maps onto the local stop |
+| **Watch it work** | Streamed replies, thinking, tool calls and artifacts as they happen |
+| **Stop generation** | The stop button maps onto the local stop |
 | **Answer a permission prompt** | Tool approvals surface on the phone and can be approved or denied there |
-| **Review a plan** | Plan proposals arrive for approval like they do locally |
+| **Review a plan** | Plan proposals arrive for approval as they do locally |
 | **Pick a tab** (`#`) | Choose which open tab the turn is about |
 | **Mention a soul** (`@`) | Route the turn to a specific [Space Soul](/en/docs/features/space-souls) |
-| **Invoke a skill** (`/`) | The portal composer lists your installed [skills](/en/docs/skills) |
+| **Invoke a skill** (`/`) | The composer lists your installed [skills](/en/docs/skills) |
+| **Clear the conversation** (`/clear`) | *v0.3.14.* Empties the session everywhere at once — desktop, database and the phone's own copy. It stops at the daemon before the model sees it, and stops a turn already running |
+| **Send an original image** | *v0.3.14.* Tick **Original** to send the untouched file as well as the compressed copy (see below) |
+| **See pictures, hear and play media** | *v0.3.14.* Screenshots, spoken replies and files from the machine play on the phone (see below) |
 | **Receive notifications** | Anything the agent would notify you about locally is forwarded |
 
-To fill the `/`, `@` and `#` menus, the portal may ask the daemon for exactly
+To fill the `/`, `@` and `#` menus, the phone may ask the daemon for exactly
 three things — the skill list, the soul list, and the open-tab list. That is an
 **allow-list, not a filter**: no other command reaches the daemon over this
-channel, so a portal cannot install a pack, write config, or touch the knowledge
-base.
+channel, so a phone cannot install a pack, write config, touch the knowledge
+base, or change any agent pairing.
 
-## What the phone cannot do
+## Pictures, sound and files
 
-**It cannot raise the session's permissions.** The chat mode and the
-[Agent execution tier](/en/docs/settings/general#agent-execution-tiers) are
-snapshotted from your sidebar when `/remote-control` runs, and the remote turns
-inherit them verbatim. The portal *displays* both so you know what a turn would
-actually be allowed to do, and can change neither. The channel never grants more
-than the session already had.
+*New in v0.3.14.*
 
-So if you plan to be away from the machine, pick the tier **before** you pair.
+- **Screenshots arrive as pictures.** A screenshot the agent takes is stored on
+  your machine and the phone fetches it by id. The model still *sees* the
+  screenshot, but it can no longer write image bytes into its reply — which is
+  what used to put a wall of unreadable base64 on the phone.
+- **Read-aloud plays on the phone.** Ask the agent to read something aloud and
+  speech made with the local Kokoro voice (no API key, nothing leaves the
+  machine to make it) plays on the phone, starting as soon as the first sentence
+  is ready rather than when the whole reading is done.
+- **Play a file that is on the machine.** Ask, for example, "play
+  ~/Videos/demo.mp4" and the agent offers the file to the phone, which streams it
+  on demand without the file being copied or read into the conversation. Only
+  media types are served (common video, audio and image formats), and it needs
+  the same permission as reading a file at your execution tier — you are shown
+  the resolved path when you are asked.
+- **Send an original image.** By default the phone sends a compressed picture,
+  which is right for most turns. With **Original** ticked, the untouched file is
+  also uploaded in chunks over the encrypted channel and saved on the machine, so
+  the agent can open it at full detail with a tool while the model gets a copy
+  sized to what it can see. The machine trusts nothing the phone says about the
+  file: the name is generated (yours is kept for display only), the size and
+  checksum are re-verified, and the type is read from the file's own bytes.
+  Uploads are kept across a dropped connection (the conversation is still about
+  them), removed when the channel ends for good, and leftovers older than a day
+  are swept at startup.
+
+Media travels on a socket of its own, so a large file never holds up the text of
+the reply behind it.
+
+> **Peer-to-peer and screen sharing are not in the release builds.** v0.3.15 adds
+> a direct WebRTC path to the phone (with STUN/TURN for phones behind mobile
+> networks) and a `screencast_start` tool that shares the screen live, after
+> asking permission to record it. Both are compiled in only when the agent is
+> built with the `webrtc` feature, which the v0.3.16 release binaries are not.
+> In a release build everything travels over the relay, which carries pictures
+> and files but not a live stream, and asking the agent to share the screen
+> returns an error saying so.
+
+## Pair an AI agent: `/pair-agent`
+
+*New in v0.3.16.*
+
+Another AI agent can be paired with this machine the way a phone is — and then
+use your NevoFlux browser as its browser, and hand NevoFlux whole tasks to run.
+The first client is **Muse**; any agent that speaks the NevoFlux agent-channel
+protocol (MCP over the encrypted relay) can pair.
+
+```text
+/pair-agent
+```
+
+The sidebar shows a four-line block:
+
+```text
+NEVOFLUX_AGENT_PAIRING
+relay: wss://relay.nevoflux.app
+channel: <channel-id>
+code: A-BCDE-FGHJ-KMNP
+```
+
+Copy the whole block and paste it into the agent (for Muse, something like
+"install the NevoFlux client and pair with this"). The agent then signs in to
+**your** NevoFlux account through a device sign-in you approve at
+**nevoflux.app/device**. The block is shown once; `/devices` lists the pairing,
+`/unpair <id>` takes it back.
+
+> **Pair only an agent you trust.** Whoever runs the agent gets the reach the
+> agent has: within its tier it can act in your browser — including tabs where
+> you are signed in — and run tasks with skills and Canvas. At `full-auto` that
+> is full access to this computer.
+
+### What a paired agent can do in your browser
+
+Each agent pairing has **its own execution tier**, separate from your global
+"Agent execution" setting — raising one never widens the other — and every new
+pairing starts at **`read-only`**. The tier is a ceiling: a call above it is
+refused at once, and nobody is asked.
+
+| Tier | What the agent may do |
+| --- | --- |
+| `read-only` | Open any web page, in a new tab or in one of yours (replacing the page there); read any of your open tabs, including signed-in ones (mail, banking); see which tabs you have open. Clicking and typing are refused |
+| `browser-auto` | Also click, type, fill, scroll, press keys and switch tabs on any page, including signed-in ones — anything you could do there: submit forms, send messages, buy things, delete data |
+| `browser-auto-local-read` | The same as `browser-auto` for an agent; the extra local reads exist for the sidebar only |
+| `full-auto` | Also upload files from your NevoFlux workspace folder to a page — the only tier where the agent can send your local files to a website, and it chooses which file goes where |
+
+Change it with `/agent-tier <id> <tier>` (the short id from `/devices`), or in
+**Settings → Muse** (`nevoflux://settings/muse`). The change applies from the
+agent's next call. Nothing the agent sends can change its own tier.
+
+How the agent works in your browser:
+
+- **It has tabs of its own.** Its first navigation opens a tab in the background,
+  and it keeps working there unless it names another tab. It can act in one of
+  your tabs only after listing them, and the listing marks which tabs are its own.
+- **Only `http`/`https` pages** (and `about:blank`). `file:`, `nevoflux:`,
+  `javascript:` and `data:` URLs are refused.
+- **Private windows are off limits.** Its tabs open in a normal window, it cannot
+  act in a private-window tab, and private tabs are left out of what it is shown.
+- **Approvals go to the agent's side.** When a site or pack rule wants a call
+  confirmed, the question is put to the agent's client (MCP elicitation), and
+  whoever runs the agent answers it within 60 seconds. There is no "always
+  allow" — every question is asked separately. If the agent's client cannot ask
+  questions, those calls are refused.
+
+### Delegated tasks
+
+Beyond single browser calls, a paired agent can hand NevoFlux a **whole task**:
+one full agent turn, run in a background sidebar session in Agent mode, with
+skills, Canvas and every tool the pairing's tier allows. The agent starts it,
+follows its progress, answers its approvals and can cancel it; when it finishes,
+the agent gets the reply and one picture of what the task produced (the Canvas,
+or the tab it worked in).
+
+The pairing's tier is the boundary for the whole task, not just for the browser:
+a tool above it is refused at once, and lowering the tier stops the next tool
+call. A session a paired agent started always runs at the **pairing's** tier;
+changing that session's own tier or your global default cannot raise it.
+
+**What you see on the desktop.** Paired agents that are connected or paused get a
+row at the top of the sidebar saying what each is doing ("working: …",
+"waiting for approval · 42 s left: …", "connected · 12 min"), with **Pause** /
+**Resume** and **Unpair** (Unpair asks for a second click). A running task gets a
+line under its agent with **Stop task** and **View session**, which opens the
+task's conversation in the sidebar; while you look at it, a banner says the agent
+is working on it.
+
+**Approvals in a task** — permission prompts, the agent's own questions, plans to
+confirm — can be answered from **either end**: by the agent, or by you with the
+buttons on the task's line. The first answer wins. Task approvals are held for
+**30 minutes**; unanswered by then, the approval is denied and the task fails.
+
+**Sensitive actions always ask, and by default only you can answer.** Ten tools
+need an approval in a delegated task whatever the tier — even at `full-auto` —
+and whatever was allowed before: scheduling work, running or resuming a
+schedule, starting a loop, switching a pack or the model, setting a goal,
+replacing the system prompt, and sharing the screen. By default the agent cannot
+answer these; they wait for you on the desktop. **Settings → Muse → "Let Muse
+approve sensitive actions"** lets the agent answer them too (the line then says
+"Muse may also answer").
+
+**NevoFlux's own settings are protected — up to a point.** In a delegated task,
+the agent's own file-writing tools refuse to write anywhere in NevoFlux's
+configuration or data directory (`config.toml`, skills, packs, pairings, the
+database). Shell commands and an ACP provider's own file tools are not
+restricted, so **at `full-auto` this limit does not hold**: full-auto is full
+access, including to the files that hold your settings and pairings. Give
+`full-auto` only to an agent you would trust with this computer.
+
+**Your current tab is not the task's.** A delegated turn never inherits the tab
+context of the session it runs in, so your active page does not leak into a task
+an agent controls.
+
+Limits: one task per pairing at a time, at most 20 starts per hour. If your model
+provider is an ACP agent, it never runs a delegated turn and one of your own turns
+at once — the agent is told the provider is busy. A finished task can be
+collected for an hour, or until NevoFlux restarts; its session stays in your
+history either way.
+
+### Pause, resume, unpair
+
+- **Pause** keeps the pairing but closes the channel, and the machine does not
+  dial it again until you **Resume** — not even after a restart. Pausing cancels
+  the agent's running task.
+- **Unpair** closes the channel, deletes the key, cancels the task and any open
+  questions, and forgets the agent's tabs.
+
+Both are local-only: nothing arriving over a relay can pause, resume or re-tier
+an agent.
 
 ## Security model
 
 - **End-to-end encrypted.** The pairing code and the channel id derive a 256-bit
   key via **Argon2id**; frames are sealed with **AES-256-GCM**. The relay only
   ever sees ciphertext — it cannot read, forge, or tamper with a frame, and a
-  forged one fails authentication and is dropped.
+  forged one fails authentication and is dropped. An agent channel accepts
+  sealed frames only.
 - **The pairing code is the secret.** The channel id is unguessable but not
   confidential — someone who has it can attach and receive ciphertext they cannot
-  read. Someone who has the **code** drives your session. Treat it like a
-  password, and don't paste it anywhere but the portal.
-- **Scoped to one session.** Downlink traffic is filtered by session, so a paired
-  portal sees its own conversation's events and no one else's.
+  read. Someone who has the **code** (and is signed in to your account) drives
+  your session. Treat it like a password and don't paste it anywhere but the
+  phone or the agent you are pairing.
+- **Stored keys are on your disk.** A durable pairing stores the keys derived
+  from its code (`pairings.json`, `agent-pairings.json`) in the agent's data
+  directory, next to the account token. That is what lets a pairing survive a
+  restart; it also means anything that can read that directory — including the
+  agent's own shell at `full-auto` — can read them. Revoke with `/unpair`.
+- **Scoped.** A `/remote-control` phone sees its own conversation's events and no
+  one else's. A paired phone sees the session list and the one conversation it
+  has opened, and can only open a session that is on that list.
+- **Who answers what.** Phone prompts are answered by you. A paired agent's
+  per-call approvals are answered on the agent's side. Delegated-task approvals
+  can be answered by either, except the sensitive ones, which are yours unless
+  you allow otherwise.
 - **Nothing is published.** The daemon dials out to the relay; it opens no
   inbound port, so there is no listener on your machine to expose or firewall.
 
@@ -93,8 +372,20 @@ So if you plan to be away from the machine, pick the tier **before** you pair.
 
 ## Headless containers
 
-Driving a **container** from a phone — `--remote-control` with no HTTP interface
-at all, plus a `remote` service in the shipped Compose file — exists in the agent
-repository but is **not part of v0.3.13**. It will be documented under
-[Headless (Docker)](/en/docs/deployment) once it ships in a release. What this
-page describes is remote control of a **desktop** session.
+*In the release since v0.3.14.* A container can be driven from a phone with no
+desktop at all: `nevoflux-agent --remote-control` runs a head that serves no HTTP and
+prints its connect link and pairing code to its log, and the shipped Compose file
+has a `remote` service for it. The container signs in on its own
+(`nevoflux-agent account login`, or a token injected as `NEVOFLUX_SERVICE_TOKEN`), and
+its mode and execution tier are fixed at launch — never changeable from the
+phone. Setup is covered under [Headless (Docker)](/en/docs/deployment/remote-control).
+
+## Known limits
+
+- **Agent site rules match where a navigation goes,** not the page a later click
+  or fill lands on. A rule that asks before acting on a site guards the agent's
+  navigations there, not its clicks in a tab that is already on it.
+- **A headless NevoFlux browser registered with the same daemon** answers a
+  paired agent's calls instead of your desktop browser.
+- **Live screen sharing and the peer-to-peer path** are not in the release
+  builds (see above).

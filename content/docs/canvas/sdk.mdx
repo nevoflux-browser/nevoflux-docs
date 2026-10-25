@@ -49,7 +49,7 @@ const { callId } = await NevofluxSDK.tool.invoke(
 );
 
 // 4) React to events from elsewhere in NevoFlux
-const sub = NevofluxSDK.events.subscribe(["session:*"], (evt) => {
+const sub = NevofluxSDK.events.subscribe(["ui:*"], (evt) => {
   console.log("event", evt);
 });
 // sub.unsubscribe() when done
@@ -58,3 +58,42 @@ const sub = NevofluxSDK.events.subscribe(["session:*"], (evt) => {
 > Which tools `tool.invoke` can run is controlled by the
 > [tool whitelist](/en/docs/canvas/tool-whitelist). Calls to disabled or unlisted tools
 > are rejected.
+
+## What a canvas may do
+
+A canvas runs in an isolated iframe, so the **Canvas bridge** — the host side of
+`NevofluxSDK` — is its only way to reach anything privileged. Since NevoFlux 0.3.16
+the bridge keeps each canvas to what is its own. Code that relied on the looser
+behaviour of earlier versions may need changes:
+
+| Area | Rule |
+| --- | --- |
+| `storage` | Private to the canvas: keys live in that canvas's own namespace, so two canvases never see each other's data and `query('')` lists only this canvas's keys. A key written before 0.3.16 is moved into the namespace the first time it is read, unless it starts with `config:`, `canvas:`, `session:` or `app:`. |
+| `agent.chat` / `agent.cancel` | A canvas can only continue or cancel sessions it started. Only image attachments (`{ name, mime_type, data }`) are attached; a `{ path }` attachment is named in the message instead, and the agent decides whether to read it with its file tools — under your [Agent execution tier](/en/docs/settings/general#agent-execution-tiers). |
+| `agent.sendCommand` | A canvas you or the agent made may send only `daemon.info`, `skill.list`, and `artifact.get` for its own artifact. A [pack](/en/docs/packs) dashboard may send exactly the commands its manifest declares. Settings, pairing, account, raw-storage, MCP-server and pack-install commands are never available to a canvas. |
+| `callTool` | Actions that change a page (click, type, …) work only in tabs the canvas opened itself — open one with `navigate` and `new_tab: true`. Read actions work on any tab. |
+| `sidebar.send` | Text only, up to 4,000 characters, shown in the chat labelled with the canvas id. |
+| `sidebar.notify` | A system notification titled with the canvas's name, at most three per 30 seconds per canvas. |
+| `events.publish` | Topics starting with `ui:notification`, `ui:soul`, `ui:render` or `ui:tab` belong to the browser and are refused. |
+| `share` | `share()` always shares the calling canvas; `list()` shows only its shares, and `extend` / `delete` work only on them. |
+
+A refused call rejects its promise with an error whose message starts with a code
+such as `FORBIDDEN_COMMAND:`, `COMMAND_NOT_AVAILABLE:` or `NOT_OWN_SESSION:`, so
+your code can tell a policy refusal from a failure.
+
+### Policy checks on `callTool`
+
+Before a canvas's `callTool` runs, the browser asks the agent's policy
+(`canvas.policy_check`) whether it may, using the same
+[pack site rules](/en/docs/packs/development#site-rules--componentstool_policy) the
+agent's own calls go through:
+
+- A rule that would **ask** refuses instead — a canvas cannot host a confirmation
+  dialog mid-call.
+- A pack dashboard built for `pack-protocol/0.2` may only use the actions it
+  declared in its manifest.
+- If the agent cannot be reached, **reads still work and anything else is
+  refused**, so stopping the agent is not a way around a pack's rules.
+
+The check and the tab-ownership rule are enforced by the browser before the action
+runs, not by the canvas, so canvas code cannot skip them.

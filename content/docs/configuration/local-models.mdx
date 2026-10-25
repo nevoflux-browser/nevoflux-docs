@@ -1,0 +1,155 @@
+---
+title: On-device models
+description: Run the agent on a model on your own machine, what local mode guarantees about network traffic, and what it changes.
+---
+
+New in **v0.3.16**, NevoFlux can run its model **on this machine** instead of calling
+a cloud API. It downloads a pinned build of the
+[llama.cpp](https://github.com/ggml-org/llama.cpp) server and a quantized Qwen3 model,
+starts the engine when the agent needs it, and unloads it when idle. There is no API
+key and no account.
+
+This is a different thing from the **Ollama** provider and from a
+[custom provider](/en/docs/configuration/providers#custom-providers) pointed at a local
+server: those are servers you install and run yourself. On-device is managed end to
+end by NevoFlux, and it is the only option that turns on the **LocalOnly guard**
+described below.
+
+## Set it up
+
+Open [Settings → AI Models](/en/docs/settings/ai-models). The **On-device** group sits
+above the provider grid.
+
+1. Click **Set up**. NevoFlux probes the machine (GPU, drivers, memory) — nothing is
+   downloaded yet.
+2. A consent dialog lists what will be downloaded — the engine for the chosen backend
+   and the model — with each size, the total, where they come from, and how much disk
+   space is free. When a cheaper backend would also work, it offers to switch
+   (e.g. *Use Vulkan instead, save …*).
+3. Click **Download**. Progress shows on the card; **Cancel** stops it.
+4. When it is installed, click **Set as default** to make on-device the active
+   provider.
+
+Once installed, the card shows **Model**, **Backend** and **Context** selectors and the
+installed engine version. **Update engine** appears when a newer engine build is
+available (or the installed one is no longer supported), **Repair** when the engine
+files are damaged, and **Try again** after a failed download.
+
+## Models
+
+| Model | `model` id | Download (Q4_K_M) |
+| --- | --- | --- |
+| **Qwen3 8B** *(default)* | `qwen3-8b` | ≈ 5.0 GB |
+| Qwen3 4B Instruct (2507) | `qwen3-4b-instruct-2507` | ≈ 2.5 GB |
+| Qwen3 1.7B | `qwen3-1.7b` | ≈ 1.1 GB |
+
+8B is the default because it was much more reliable at choosing the right tool than 4B
+in NevoFlux's own tests. The smaller models are there for machines that cannot fit 8B;
+expect noticeably weaker tool use from them. Before downloading, NevoFlux estimates the
+model's memory needs at the planned context size and decides how much of it can go on
+the GPU.
+
+## Hardware and backends
+
+| Platform | Backends |
+| --- | --- |
+| **Windows x64** | CUDA (NVIDIA), Vulkan, CPU |
+| **Linux x64** | CUDA (NVIDIA), Vulkan, CPU |
+| **Windows / Linux arm64** | CPU (Linux arm64 also Vulkan and CUDA) |
+| **macOS** | Metal (Apple GPU), chosen automatically — there is no backend selector |
+
+**Backend → Automatic** probes the hardware and tries the best backend first, falling
+back down the chain if it does not work. If an NVIDIA GPU is present but cannot be
+used, the card says why: either `CUDA_VISIBLE_DEVICES` hides it from NevoFlux, or no
+CUDA runtime was found (on Linux the runtime must be installed; Windows downloads come
+with it). You can always continue on Vulkan or CPU — a CPU-only run works but is slow.
+
+## What the LocalOnly guard guarantees
+
+While on-device is the active provider (`provider = "local"` and
+`[llm.local] enabled = true`), the agent holds a **LocalOnly latch**. With it on:
+
+- **Every model request to a non-loopback address is refused** before it leaves the
+  process — chat, streaming, conversation summarization, memory extraction, and
+  sub-agents. A request blocked this way fails with an error that says on-device mode
+  is on; it is never silently rerouted to a cloud model.
+- **CLI and agent providers are always refused** (Claude Code, Gemini CLI, Antigravity,
+  Kimi Agent, OpenClaw), even if their URL looks local, because NevoFlux cannot see
+  where those programs send data.
+- **Switching the model to a cloud provider mid-conversation is refused**, and a
+  sub-agent asked to use a cloud model runs on-device instead.
+- The knowledge-base gateway follows the latch, and **Jev** can only reach a loopback
+  endpoint (and does not apply to on-device turns anyway — see [Jev](/en/docs/configuration/jev)).
+
+What it does **not** cover: the latch is about *model* traffic. The browser itself, web
+search and fetch tools, MCP servers, and downloads still use the network as usual. If
+you need nothing at all to leave the machine, you also have to avoid those.
+
+> **Leaving on-device.** Picking a cloud provider while the latch is on asks you to
+> confirm (**Switch anyway** / **Keep on-device**). The settings page treats the
+> switch as taking effect only after NevoFlux restarts — restart before you rely on
+> cloud models again.
+
+## What changes in local mode
+
+A 16–32K context cannot hold what a cloud turn sends, so local mode works differently:
+
+- **A short system prompt of its own**, instead of the full cloud prompt.
+- **Tools load on demand.** A turn starts with a `tool_search` tool (in Chat mode also
+  `web_search`, `memory_search` and `browser_get_markdown`); the model searches for the
+  tools it needs and they are added to its tool list, up to 12 at a time. Cloud-only
+  orchestration tools (`switch_model`, `orchestrate`, computer-use loading) are not
+  offered.
+- **Tool-result size limits follow the context size** the engine was started with, so
+  one large page cannot fill the whole window.
+- **Unattended work pauses.** [Loops](/en/docs/features/automation) skip their runs,
+  [scheduled tasks](/en/docs/features/scheduling) are recorded as missed (and are not
+  caught up later), and goals that rely on a model to judge progress pause — goals
+  with a programmatic check still run. When you set on-device as default, the card
+  tells you how many loops, schedules and goals were paused.
+- **Interactive turns come first.** Background work (summaries, extraction) waits for
+  free capacity and never starts the engine on its own.
+
+## The engine process
+
+- It listens on **127.0.0.1 only**, with a per-launch key passed through the
+  environment, and llama.cpp's built-in web UI is disabled.
+- It starts on first use and **unloads after 5 minutes idle** (`idle_unload_secs`).
+  The card then reads "starts when next needed".
+- Changing the model or quantization reloads it.
+- Engine archives and models are checked against **pinned sizes and SHA-256 digests**;
+  an installed engine is re-verified on cold start.
+
+Downloads come from: the engine — a NevoFlux mirror on GitHub (first through the
+`ghfast.top` proxy), then the original llama.cpp releases; the model — ModelScope,
+`hf-mirror.com`, then Hugging Face. Engines are stored in your cache directory under
+`nevoflux/engine/` and models under `nevoflux/models/` (e.g. `~/.cache/nevoflux/` on
+Linux, `~/Library/Caches/nevoflux/` on macOS, `%LOCALAPPDATA%\nevoflux\` on Windows).
+`NEVOFLUX_LOCAL_CACHE_DIR` moves both.
+
+## `[llm.local]`
+
+The settings page writes this section; you rarely need to edit it.
+
+```toml
+[llm]
+provider = "local"         # aliases: "on-device", "ondevice"
+
+[llm.local]
+enabled = true
+model = "qwen3-8b"
+quant = "Q4_K_M"
+backend = "auto"           # auto | cpu | vulkan | cuda
+gpu_layers = -1            # -1 = offload as many layers as fit
+ctx_size = "auto"          # "auto" or a token count; minimum 16384
+kv_cache_type = "q8_0"     # q8_0 | f16
+parallel = 2               # request slots the engine reserves context for
+idle_unload_secs = 300
+```
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `false` | Both this and `provider = "local"` are needed for on-device to be active (and for the latch). |
+| `model` / `quant` | `qwen3-8b` / `Q4_K_M` | Must be a catalog entry. |
+| `backend` | `auto` | Ignored on macOS (always Metal). |
+| `ctx_size` | `auto` | Below 16,384 is rejected. Automatic aims for 32K when memory allows. |

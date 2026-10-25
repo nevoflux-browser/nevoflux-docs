@@ -26,6 +26,12 @@ the pack contains, flags any bundled tool binaries, surfaces policy violations (
 block the install), warns about unreviewed sources, and requires an explicit second
 confirmation before anything is written. Progress and errors stream inline.
 
+The preview also lists the daemon commands a pack's dashboard declares it will
+send. It does **not yet** show a `pack-protocol/0.2` pack's site rules, hook, or
+prompt-replacement mode, which change how the agent behaves — check the pack's
+`pack.toml` for `[[components.tool_policy]]`, `[components.hooks]` and
+`[components.prompt]` first (see [Packs](/en/docs/packs#what-a-02-pack-can-also-do)).
+
 The same flow can be launched from outside Settings via a
 [`nevoflux://pack-install?src=…` install link](/en/docs/packs) — e.g. from packhub or a
 project README.

@@ -33,6 +33,15 @@ description: 安装后第一件事 —— 选择提供商并填入 API 密钥。
 保存会把该提供商的设置写入你的 `config.toml`(`[llm.<provider>]`)并将其设为当前
 提供商。侧边栏检测到新提供商后,会自动从欢迎界面切换到聊天界面。
 
+**没有 API 密钥?** 同一标签页还有另外两个选择:
+
+- **On-device**(位于标签页顶部)会下载一个模型并在本机运行——无需密钥、无需账号,
+  对话内容也不会发往云端模型。它需要几 GB 磁盘空间,有 GPU 时效果最好。见
+  [本地模型](/zh/docs/configuration/local-models)。
+- **Add Custom Provider**(位于 **Custom Providers** 下)可连接任何 OpenAI 兼容或
+  Anthropic 端点,例如你已在运行的模型服务;密钥可选。见
+  [自定义提供商](/zh/docs/configuration/providers#自定义提供商)。
+
 支持的提供商完整列表、各自的默认模型,以及可替代写入文件的环境变量,见
 [配置 → 提供商与 API 密钥](/zh/docs/configuration/providers)。
 

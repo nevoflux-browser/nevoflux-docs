@@ -16,6 +16,11 @@ description: 智能体配置文件的位置、完整结构与一个完整示例�
 
 智能体首次运行时会以默认值创建该文件。所有字段都是可选的 —— 省略的字段使用默认值。
 
+**`NEVOFLUX_CONFIG`**(v0.3.16 新增):若该环境变量被设为非空路径,智能体会读写那个
+文件,而不是默认位置的文件。可用它运行另一个拥有独立提供商和设置的智能体,而不影响你
+平常的 `config.toml`。此时部分其他文件(如扩展包)会相对于该文件所在目录解析,因此请把
+它放在单独的文件夹中。
+
 > **手动编辑需要重启。** 通过设置界面所做的修改会即时生效。如果你手动编辑
 > `config.toml`,请重启 NevoFlux 以便智能体重新加载。
 
@@ -29,6 +34,8 @@ description: 智能体配置文件的位置、完整结构与一个完整示例�
 | --- | --- |
 | `[llm]` | 当前提供商与通用生成设置 |
 | `[llm.<provider>]` | 各提供商的密钥、模型、Base URL |
+| `[llm.custom.<id>]` | 你自己添加的提供商([详情](/zh/docs/configuration/providers#自定义提供商)) |
+| `[llm.local]` | 本地模型引擎([详情](/zh/docs/configuration/local-models)) |
 | `[daemon]` | 后台进程:端口、超时、并发 |
 | `[daemon.session]` | 会话上限与清理 |
 | `[daemon.context]` | 上下文窗口、历史、压缩 |
@@ -39,7 +46,10 @@ description: 智能体配置文件的位置、完整结构与一个完整示例�
 | `[learning]` | 自学习流水线 |
 | `[embedding]` | 用于搜索的嵌入模型 |
 | `[knowledge_base]` / `[knowledge_base.brain]` | GBrain 知识库([详情](/zh/docs/knowledge-base)) |
-| `[tts.*]` | 语音合成 / 转写引擎 |
+| `[tts.*]` | 语音引擎:`sensevoice`、`whisper`、`kokoro`、`moss`、`elevenlabs`([详情](/zh/docs/features/voice#配置)) |
+| `[speech]` | 语音回复相关的本机测量值(大多由智能体写入) |
+| `[jev]` / `[jev.points]` | 可选的 Jev 决策服务,默认关闭([详情](/zh/docs/configuration/jev)) |
+| `[remote_control]` | 无界面远程控制服务([详情](/zh/docs/features/remote-control)) |
 
 ## 关键字段
 
@@ -62,6 +72,18 @@ description: 智能体配置文件的位置、完整结构与一个完整示例�
 | `base_url` | string | 覆盖 API 地址(代理 / 兼容服务) |
 | `context_window` | int | 覆盖模型上下文大小 |
 | `use_streaming` | bool | 流式回复(默认开启;`ollama` 为关闭) |
+
+### `[llm.custom.<id>]`
+
+你在 **Custom Providers** 下添加的提供商。它接受与 `[llm.<provider>]` 相同的字段,另加:
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `display_name` | string | 卡片上显示的名称;可随时修改 |
+| `wire` | `"openai"` 或 `"anthropic"` | 它使用哪种 API |
+| `accent` | string | 卡片颜色,`#rrggbb`(可选) |
+
+用 `provider = "custom:<id>"` 选用它。见[自定义提供商](/zh/docs/configuration/providers#自定义提供商)。
 
 ## 完整示例
 

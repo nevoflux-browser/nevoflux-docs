@@ -3,7 +3,7 @@ title: 开发扩展包
 description: 编写 NevoFlux 扩展包 —— pack.toml 清单、各类组件、能力沙箱、生命周期与完整示例。
 ---
 
-> 协议:`pack-protocol/0.1` · 读者:扩展包作者(第一方与第三方)
+> 协议:`pack-protocol/0.1` 与 `pack-protocol/0.2`(NevoFlux 0.3.16+) · 读者:扩展包作者(第一方与第三方)
 
 扩展包就是**一组文件加一份清单** —— 你无需编写任何安装器代码。你只写声明和它们指向的
 文件,守护进程负责事务性安装/卸载、回滚、安装凭据,以及一条硬保证:**默认情况下卸载绝不
@@ -72,7 +72,7 @@ nevoflux pack uninstall hello-pack             # 干净移除
 [pack]
 name = "my-pack"                  # 必填。[a-z0-9-]+,唯一。也是凭据键和默认的 GBrain 命名空间前缀。
 version = "0.1.0"                 # 必填。semver。
-protocol = "pack-protocol/0.1"    # 必填。必须是平台支持的协议版本。
+protocol = "pack-protocol/0.1"    # 必填。"pack-protocol/0.1" 或 "pack-protocol/0.2"。
 min_nevoflux = "0.3.0"            # 必填。semver 下界;与守护进程版本核对。
 description = "One-line summary"  # 可选。
 license = "MIT"                   # 可选。
@@ -90,8 +90,14 @@ namespace = "my"                  # 可选。覆盖 GBrain 命名空间前缀(�
 | `[components.dashboard]` | “我的 Canvas”(常驻工件) | 是 |
 | `[components.protected]` | (仅声明) | 不适用 —— 将页面标记为用户数据 |
 | `[components.knowledge]` | — | **暂不支持** |
+| `[[components.tool_policy]]` *(0.2)* | (仅声明)—— 站点规则 | 不适用 |
+| `[components.hooks]` *(0.2)* | 包内的一个 WebAssembly 模块 | 不适用 |
+| `[components.prompt]` *(0.2)* | (仅声明)—— 提示词替换上限 | 不适用 |
+| `[permissions]` *(0.2)* | (仅声明) | 不适用 |
 
-每个组件都是可选的,扩展包可以只带任意子集。
+每个组件都是可选的,扩展包可以只带任意子集。0.2 组件见
+[pack-protocol/0.2 新增内容](#pack-protocol02-新增内容);在
+`protocol = "pack-protocol/0.1"` 下声明其中任何一个都会导致解析错误。
 
 ## 各组件详解
 
@@ -196,23 +202,174 @@ prefixes = ["my/reports/", "my/companies/"]
 
 ```toml
 [components.dashboard]
-artifact_id = "my-pack-dashboard"   # 必须以扩展包名开头
+artifact_id = "my-pack-dashboard"   # 必须等于扩展包名或以 "<扩展包名>-" 开头
 content_type = "project"
 files_from = "components/canvas-app/dist"   # 构建产物目录(index.html + 资源)
 entry = "index.html"                        # files_from 中的入口文件
 ```
 
 该目录的文件会被打入工件并以常驻方式插入,因此它能在会话删除后存留,并出现在**我的 Canvas**
-下。重装会按相同 `artifact_id` 更新(不产生重复行),而该 id **必须以扩展包名开头**,这样不同
-扩展包就无法互相覆盖工件。
+下。重装会按相同 `artifact_id` 更新(不产生重复行),而该 id **必须等于扩展包名或以
+`<扩展包名>-` 开头**,这样不同扩展包就无法互相覆盖工件。
+
+仪表盘以 [Canvas](/zh/docs/canvas) 形式运行,和其他 canvas 一样受
+[Canvas 桥接规则](/zh/docs/canvas/sdk#canvas-能做什么)约束 —— 只能用自己的存储、自己的会话,
+会改变页面的操作只能在它自己打开的标签页中执行。它还能额外访问什么,取决于协议:
+
+- **`pack-protocol/0.1`** —— 与智能体生成的 canvas 相同:`callTool` 只受站点规则检查,
+  `agent.sendCommand` 只能发送 `daemon.info`、`skill.list` 和 `artifact.get`(仅限自身工件)。
+- **`pack-protocol/0.2`** —— 恰好是它声明的内容,**未声明的一概没有**:
+
+```toml
+[components.dashboard.capabilities]
+call_tool = ["navigate", "get_markdown", "screenshot"]  # NevofluxSDK.callTool 操作
+commands  = ["skill.list", "schedule.list"]             # NevofluxSDK.agent.sendCommand
+invoke    = ["pdf.render"]                              # NevofluxSDK.tool.invoke(见下方说明)
+```
+
+`call_tool` 按浏览器操作的裸名列出(写 `click`,不写 `browser_click`);调用未声明的操作会以
+`CAPABILITY_NOT_DECLARED` 被拒绝。`commands` 按确切名称列出守护进程命令;未声明的命令会以
+`COMMAND_NOT_DECLARED` 被拒绝。有些命令永远不会授予任何 canvas —— `config.`、`remote.`、
+`account.`、`content_store.`、`soul.`、`local.`、`kb.wizard.` 开头的一切命令,以及
+`mcp.add` / `update` / `delete` / `connect` / `disconnect`、`pack.install` / `update` /
+`uninstall`、`jev.set`、`models.download`、`session.delete`、`session.clone`、`file.pick`、
+`status`、`tabs.list`、`usage.export_calls`、`brain.share_create`、
+`brain.share_import_url` 和 `skill.reload`。声明其中任何一个都会导致校验失败
+(`DashboardCommandRejected`),因此安装预览绝不会列出一个面板实际得不到的命令。预览会列出
+声明的命令。
+
+> **`invoke` 目前尚未强制执行。** 它会被解析并保留,但在 0.3.16 中,仪表盘的 `tool.invoke`
+> 调用只受[工具白名单](/zh/docs/canvas/tool-whitelist)限制。仍请声明你用到的工具,这样等到它
+> 被强制执行时扩展包仍能正常工作。
 
 ### 暂不支持
 
 - **`[components.knowledge]`** —— 把整套预构建知识库作为可移除、只读的源发布,在
-  `pack-protocol/0.1` 中**尚不可用**。包含它的清单会以 `KNOWLEDGE_UNSUPPORTED` 被拒绝。请改用
+  `pack-protocol/0.1` 和 `0.2` 中都**尚不可用**。包含它的清单会以 `KNOWLEDGE_UNSUPPORTED` 被拒绝。请改用
   `[[components.seed]]` 页面发布起步内容。
 - **`[components.config]`** —— 扩展包**不可**写入 `config.toml`。包含它的清单会被拒绝。请改为
   通过技能/约定来表达行为。
+
+## pack-protocol/0.2 新增内容
+
+`pack-protocol/0.2`(NevoFlux 0.3.16+)让扩展包能够塑造智能体的*行为*,而不只是决定安装什么。
+请同时设置这两个字段:
+
+```toml
+[pack]
+protocol = "pack-protocol/0.2"
+min_nevoflux = "0.3.16"
+```
+
+每个 0.2 字段的默认值都是“什么也不要求”,因此一个只把 `protocol` 升级了的 0.1 清单,行为与
+之前完全一致。
+
+### installed 与 active 作用域
+
+规则和钩子带有一个 `scope`:
+
+- **`active`**(默认)—— 只在扩展包于当前运行中处于**激活**状态时生效。
+- **`installed`** —— 对每个会话都生效,无论扩展包是否激活。适合那些应当始终成立的防护;
+  用户只能通过卸载来关闭它们。
+
+智能体会在用户的目标与某个扩展包的用途相符时,自行用 `pack_activate` 工具(以及
+`pack_deactivate`、`pack_list_active`)激活它 —— UI 中没有激活开关,所以请在技能描述里写清楚
+这个扩展包是做什么的。可以同时激活多个扩展包,彼此之间没有优先级。激活:
+
+- 只在发起它的那次运行中有效 —— 它派生的子智能体共享该状态 —— 绝不会带到另一个对话;
+- 对未安装的扩展包或 0.1 扩展包会被拒绝;
+- 智能体可以悄悄撤销,**除非**该扩展包当前正在执行 `active` 站点规则。此时会询问用户,因为
+  智能体是在解除施加于自身的限制 —— 而在无人值守的循环或定时任务中无人可问,停用会被拒绝。
+
+已安装扩展包的技能无论是否激活都可用。
+
+### 站点规则 —— `[[components.tool_policy]]`
+
+站点规则会在匹配的 URL 上拒绝某个工具,或让智能体先询问用户。规则只有 `deny` 列表和 `ask`
+列表,**没有允许列表**:扩展包只能收紧用户
+[执行档位](/zh/docs/settings/general#agent-execution-权限档位)所允许的范围,绝不能放宽。
+
+```toml
+[[components.tool_policy]]
+scope   = "active"                          # "active"(默认)或 "installed"
+match   = { url = ["*://*.mybank.example/*"] }
+ask     = ["browser_click*", "browser_fill*", "browser_type*", "browser_input"]
+deny    = ["browser_eval_js"]
+message = "网银页面:每个操作都要确认。"      # 展示给用户和模型
+```
+
+- **`deny` / `ask`** 是工具名,可用 `*` 通配(`browser_click*` 同时覆盖 `browser_click` 和
+  `browser_click_by_id`)。一条规则至少要拒绝或询问一项。请使用智能体真实的工具名,见
+  [浏览器自动化](/zh/docs/features/browser-automation)。
+- **`match.url`** 是一组 `*` 通配模式,与调用所指向的 URL 匹配:调用自带 `url` 参数时用它
+  (因此 `browser_navigate` 按其目的地判定),否则用它所操作的标签页的 URL(指定的标签页,
+  否则为当前活动标签页)。自 0.3.16 起,点击、填写、输入也按其标签页的 URL 判定。`url` 列表为空
+  的规则在所有网站上生效;限定了 URL 的规则不会对完全不带 URL 的调用(例如文件工具)触发。
+- 匹配前 URL 会被**规范化**:scheme 与主机名转小写,去掉默认端口,空路径变为 `/`,去掉主机名
+  末尾的点、用户信息和 `#片段`,并剥掉任何 `view-source:` 前缀。模式也按同样方式规范化;只写
+  主机名的模式(`https://mybank.example`)表示整个网站。含用户名或 `#` 的模式永远不会匹配。
+- **拒绝优先于询问,并且跨扩展包生效**:所有适用的规则都会被检查,因此无论加载顺序如何,一个
+  扩展包的 `deny` 都会胜过另一个的 `ask`。
+- **`ask`** 会向用户弹出权限对话框 —— 没有“始终允许”,因为规则问的是*此处*的*这一次*操作。
+  即使在 **Full auto** 下也会询问。超时、无人值守的运行(循环、定时任务),或 Canvas 面板的
+  `callTool` —— 这些都无法弹出对话框 —— 都按拒绝处理。
+- 拒绝会以 `POLICY_DENIED` 加上你的 `message` 传给模型,并标明这是策略决定,模型不会重试。
+- 规则同样适用于 Canvas 面板的 `callTool`(`click` 按 `browser_click` 匹配),以及调用 NevoFlux
+  工具的 ACP/CLI 提供商 —— 但不适用于这类提供商*自带*的内置工具。
+- 规则在调用运行**之前**判定 URL。一次点击若跳转进匹配的网站,要从下一次调用起才会被拦住,
+  而不是这一次。
+
+### 提示词替换 —— `[components.prompt]`
+
+```toml
+[components.prompt]
+replace = "keep_kernel"   # "none"(默认)、"keep_kernel" 或 "full"
+```
+
+声明扩展包最多能对智能体的系统提示词做到什么程度。扩展包激活期间,智能体可以代表它调用
+`system_prompt_replace`(带 `content`、`mode` 和 `reason`);改动从下一步起生效并会被记录。
+防护措施:
+
+- **上限有约束力。** 声明了 `keep_kernel` 的扩展包不能使用 `full`(`MODE_NOT_DECLARED`)。
+- **排他。** 某个扩展包占用提示词期间,另一个会得到 `PROMPT_HELD_BY`,并且只有占用者可以调用
+  `system_prompt_restore`。
+- **归属必须明确。** 若有多个已激活扩展包声明了替换模式,调用会被拒绝(`PACK_AMBIGUOUS`),
+  而不是猜测归属。
+- **会结束。** 占用者恢复、扩展包被停用,或运行结束时,替换即告结束 —— 它绝不会比任务活得更久。
+- `keep_kernel` 目前只保留已加载技能那一节,因此实际替换的内容几乎和 `full` 一样多。
+
+权限检查、站点规则和执行档位都在代码中强制执行,而不靠提示词,因此即使是 `full` 也无法让
+智能体绕过它们。
+
+### 钩子 —— `[components.hooks]`(尚不可用)
+
+清单接受一个 WebAssembly 钩子模块:
+
+```toml
+[components.hooks]
+file   = "components/hooks/guard.wasm"
+scope  = "active"                    # "active"(默认)或 "installed"
+points = ["on_tool_pre"]
+budget = { ms = 50, fuel = 1000000 }  # 每次调用的预算;以上为默认值
+```
+
+NevoFlux 0.3.16 已具备 `on_tool_pre` 的运行时 —— 它在站点规则之后、对每次工具调用运行,可以
+允许、弃权、询问或拒绝 —— 但**安装程序不会把模块复制到已安装的扩展包中**,因此按常规方式安装
+的扩展包,其钩子并不会运行。校验所接受的其他挂载点(`on_tool_post`、`on_context_assemble`、
+`on_knowledge_write`、`on_loop_iteration_start`、`on_loop_iteration_end`)从不会被调用。目前
+请不要依赖钩子,改用站点规则。
+
+### `[permissions]`
+
+```toml
+[permissions]
+tools        = ["browser.read", "fs.session"]   # 能力分组
+unattended   = false                            # 是否可在无人看管时运行
+side_effects = ["提交求职申请"]                  # 会话之外的后果
+```
+
+声明扩展包需要什么,用于分级的安装清单。在 0.3.16 中,它会被校验,但**安装时不会展示,运行时
+也不会强制执行** —— 具体操作仍由用户的执行档位和站点规则管控。
 
 ## 能力沙箱(校验规则)
 
@@ -226,10 +383,14 @@ entry = "index.html"                        # files_from 中的入口文件
 4. **命名空间隔离** —— 种子 slug 与受保护 slug/前缀必须落在包命名空间内。
 5. **`seed` ⊆ `protected`** —— 每个种子 slug 都必须被某个受保护 slug/前缀覆盖(否则硬性拒绝
    —— 这是“绝不自动删除用户数据”的保证)。
-6. **仪表盘 id 命名空间** —— `dashboard.artifact_id` 必须以扩展包名开头。
+6. **仪表盘 id 命名空间** —— `dashboard.artifact_id` 必须等于扩展包名或以 `<扩展包名>-` 开头。
+7. **仪表盘命令可授予** *(0.2)* —— `dashboard.capabilities.commands` 中的每一项都必须非空、
+   不含空白字符,且不在永久禁止列表中。
 
 解析期检查也同样适用:`name` 匹配 `[a-z0-9-]+`;`version`/`min_nevoflux` 为合法 semver;
-`protocol` 被支持。
+`protocol` 被支持;0.1 下不得出现仅限 0.2 的组件;每条 `tool_policy` 规则的 `scope` 合法,
+且确实拒绝或询问了*某些*工具;`hooks` 的 `scope` 合法、至少有一个已知挂载点、预算不为零;
+`prompt.replace` 为 `none`、`keep_kernel` 或 `full`。
 
 ## 生命周期与保证
 
@@ -240,6 +401,11 @@ entry = "index.html"                        # files_from 中的入口文件
   更新。
 - **凭据**:写入 `~/.config/nevoflux/packs/<name>/receipt.json` —— 记录每个放置的文件(绝对路径
   + sha256)、仪表盘工件 id,以及已写入的种子 slug。
+- **已安装的清单**(0.3.16+):你的 `pack.toml` 会复制一份保存在凭据旁边,即
+  `~/.config/nevoflux/packs/<name>/pack.toml`。站点规则、激活、提示词上限以及仪表盘声明的能力
+  都从这份副本读取,而不是从你的源码目录读取 —— 修改后请运行 `nevoflux pack update`。若某个 0.2
+  仪表盘的已安装清单缺失或无法解析,它发送的所有守护进程命令都会被拒绝
+  (`PACK_MANIFEST_UNAVAILABLE`),而不会退回到默认命令集。
 
 **卸载**完全由凭据驱动:
 
@@ -345,3 +511,13 @@ prefixes = ["career/reports/", "career/companies/"]
 - **“卸载留下了我编辑过的文件。”** 这是设计如此 —— 卸载会跳过 sha256 已不匹配凭据的文件。要
   强制删除请用 `--force`。
 - **“`update` 后仪表盘没更新。”** 它按 `artifact_id` 更新;请保持该 id 跨版本稳定。
+- **“`requires protocol 'pack-protocol/0.2'`。”** 你在 `protocol = "pack-protocol/0.1"` 下用了
+  0.2 组件(`tool_policy`、`hooks`、`prompt`、`dashboard.capabilities`、`[permissions]`)。
+  请升级协议,并设置 `min_nevoflux = "0.3.16"`。
+- **“我的站点规则从不触发。”** 检查 URL 模式:它匹配的是规范化后的 URL,而规范化 URL 总带有
+  路径(`https://example.org/`),所以请写 `*://example.org/*` 而不是 `*://example.org`;
+  含用户名或 `#片段` 的模式永远不会匹配。另外,`active` 规则只有在智能体激活该扩展包后才生效。
+- **“`pack_activate` 说我的扩展包未安装。”** 只有 `pack-protocol/0.2` 扩展包可以被激活,且必须
+  由 NevoFlux 0.3.16 或更高版本安装(该版本会保留清单)。请更新或重装它。
+- **“我的仪表盘 `sendCommand` 被拒绝。”** 0.2 仪表盘只能使用 `dashboard.capabilities.commands`
+  中的命令;0.1 仪表盘只能使用 `daemon.info`、`skill.list` 和针对自身的 `artifact.get`。

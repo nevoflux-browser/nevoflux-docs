@@ -1,0 +1,136 @@
+---
+title: 本地模型
+description: 在你自己的机器上运行智能体所用的模型、本地模式对网络流量的保证,以及它带来的变化。
+---
+
+**v0.3.16 新增**:NevoFlux 可以在**本机**运行模型,而不是调用云端 API。它会下载一个
+固定版本的 [llama.cpp](https://github.com/ggml-org/llama.cpp) 服务端和一个量化的
+Qwen3 模型,在智能体需要时启动引擎,空闲时卸载。无需 API 密钥,也无需账号。
+
+这与 **Ollama** 提供商、以及指向本地服务的[自定义提供商](/zh/docs/configuration/providers#自定义提供商)
+不同:那些是你自己安装、自己运行的服务。本地推理(On-device)由 NevoFlux 全程管理,
+也是唯一会开启下文所述 **LocalOnly 防护**的选项。
+
+## 设置
+
+打开[设置 → AI Models](/zh/docs/settings/ai-models)。**On-device** 分组位于提供商网格
+上方。
+
+1. 点击 **Set up**。NevoFlux 会探测本机(GPU、驱动、内存)——此时还不会下载任何东西。
+2. 同意对话框列出将要下载的内容——所选后端的引擎和模型——包括各自大小、总量、
+   下载来源以及剩余磁盘空间。如果一个更省空间的后端同样可用,它会提供切换按钮
+   (如 *Use Vulkan instead, save …*)。
+3. 点击 **Download**。进度显示在卡片上;**Cancel** 可停止。
+4. 安装完成后,点击 **Set as default**,将本地推理设为当前提供商。
+
+安装后,卡片会显示 **Model**、**Backend**、**Context** 选择器以及已安装的引擎版本。
+有更新的引擎版本(或已安装版本不再受支持)时会出现 **Update engine**;引擎文件损坏时
+出现 **Repair**;下载失败后出现 **Try again**。
+
+## 模型
+
+| 模型 | `model` id | 下载大小(Q4_K_M) |
+| --- | --- | --- |
+| **Qwen3 8B** *(默认)* | `qwen3-8b` | 约 5.0 GB |
+| Qwen3 4B Instruct (2507) | `qwen3-4b-instruct-2507` | 约 2.5 GB |
+| Qwen3 1.7B | `qwen3-1.7b` | 约 1.1 GB |
+
+默认使用 8B,是因为在 NevoFlux 自己的测试中,它选对工具的可靠性远高于 4B。较小的
+模型是为装不下 8B 的机器准备的,工具调用能力会明显变弱。下载前,NevoFlux 会按计划的
+上下文大小估算模型所需内存,并决定其中多少能放到 GPU 上。
+
+## 硬件与后端
+
+| 平台 | 后端 |
+| --- | --- |
+| **Windows x64** | CUDA(NVIDIA)、Vulkan、CPU |
+| **Linux x64** | CUDA(NVIDIA)、Vulkan、CPU |
+| **Windows / Linux arm64** | CPU(Linux arm64 另有 Vulkan 和 CUDA) |
+| **macOS** | Metal(Apple GPU),自动选择——没有后端选择器 |
+
+**Backend → Automatic** 会探测硬件,先尝试最好的后端,不可用时沿回退链依次降级。
+如果存在 NVIDIA GPU 却用不上,卡片会说明原因:要么 `CUDA_VISIBLE_DEVICES` 把它对
+NevoFlux 隐藏了,要么找不到 CUDA 运行时(Linux 上需自行安装运行时;Windows 的下载包
+自带)。你随时可以改用 Vulkan 或 CPU——纯 CPU 也能运行,只是很慢。
+
+## LocalOnly 防护保证了什么
+
+当本地推理是当前提供商时(`provider = "local"` 且 `[llm.local] enabled = true`),
+智能体会挂上 **LocalOnly 闩锁(latch)**。开启期间:
+
+- **所有发往非回环地址的模型请求都会在离开进程前被拒绝**——对话、流式输出、对话
+  摘要、记忆提取以及子智能体。以这种方式被拦下的请求会报错说明本地模式已开启;
+  它绝不会被悄悄改道到云端模型。
+- **CLI 与 agent 类提供商一律被拒绝**(Claude Code、Gemini CLI、Antigravity、
+  Kimi Agent、OpenClaw),即使它们的地址看起来是本地的——因为 NevoFlux 无法看到
+  这些程序把数据发往何处。
+- **对话中途切换到云端模型会被拒绝**;要求使用云端模型的子智能体会改为在本地运行。
+- 知识库网关跟随闩锁;**Jev** 只能访问回环地址的端点(而且它本就不作用于本地推理
+  的轮次——见 [Jev](/zh/docs/configuration/jev))。
+
+它**不**覆盖的内容:闩锁针对的是*模型*流量。浏览器本身、网页搜索与抓取工具、MCP
+服务器以及各类下载仍照常联网。如果你需要做到没有任何数据离开本机,还得避免使用
+这些功能。
+
+> **退出本地推理。** 闩锁开启时选择云端提供商,会要求你确认(**Switch anyway** /
+> **Keep on-device**)。设置页认为这一切换要在 NevoFlux 重启后才生效——在重新依赖
+> 云端模型之前,请先重启。
+
+## 本地模式下有哪些变化
+
+16–32K 的上下文装不下一次云端轮次发送的内容,所以本地模式的工作方式不同:
+
+- **使用专门的简短系统提示词**,而不是完整的云端提示词。
+- **工具按需加载。** 每轮开始时只有一个 `tool_search` 工具(Chat 模式另有
+  `web_search`、`memory_search` 和 `browser_get_markdown`);模型搜索所需工具后,
+  它们会被加入工具列表,同时最多 12 个。仅适用于云端的编排类工具(`switch_model`、
+  `orchestrate`、计算机控制工具加载)不会提供。
+- **工具结果的大小上限随引擎启动时的上下文大小而定**,单个大页面不会占满整个窗口。
+- **无人值守的任务会暂停。** [循环](/zh/docs/features/automation)跳过运行,
+  [定时任务](/zh/docs/features/scheduling)记为错过(之后也不会补跑),依赖模型判断
+  进度的目标会暂停——带程序化检查的目标仍会运行。将本地推理设为默认时,卡片会告诉
+  你暂停了多少个循环、定时任务和目标。
+- **交互轮次优先。** 后台工作(摘要、提取)会等待空闲容量,且从不自行启动引擎。
+
+## 引擎进程
+
+- 它**只监听 127.0.0.1**,每次启动使用一个通过环境变量传入的密钥,并且禁用了
+  llama.cpp 自带的网页界面。
+- 首次使用时启动,**空闲 5 分钟后卸载**(`idle_unload_secs`)。此时卡片显示
+  "starts when next needed"。
+- 更换模型或量化方式会重新加载引擎。
+- 引擎压缩包和模型都会按**固定的大小与 SHA-256 摘要**校验;已安装的引擎在冷启动时
+  会重新校验。
+
+下载来源:引擎——GitHub 上的 NevoFlux 镜像(先经 `ghfast.top` 代理),再到 llama.cpp
+原始发布;模型——ModelScope、`hf-mirror.com`,再到 Hugging Face。引擎保存在缓存目录的
+`nevoflux/engine/` 下,模型在 `nevoflux/models/` 下(Linux 上如 `~/.cache/nevoflux/`,
+macOS 为 `~/Library/Caches/nevoflux/`,Windows 为 `%LOCALAPPDATA%\nevoflux\`)。
+设置 `NEVOFLUX_LOCAL_CACHE_DIR` 可同时移动两者。
+
+## `[llm.local]`
+
+这一节由设置页写入,通常无需手动编辑。
+
+```toml
+[llm]
+provider = "local"         # 别名:"on-device"、"ondevice"
+
+[llm.local]
+enabled = true
+model = "qwen3-8b"
+quant = "Q4_K_M"
+backend = "auto"           # auto | cpu | vulkan | cuda
+gpu_layers = -1            # -1 = 尽可能多地把层放到 GPU
+ctx_size = "auto"          # "auto" 或 token 数;最小 16384
+kv_cache_type = "q8_0"     # q8_0 | f16
+parallel = 2               # 引擎为之预留上下文的并发请求槽位
+idle_unload_secs = 300
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 需要它与 `provider = "local"` 同时成立,本地推理(及闩锁)才会生效。 |
+| `model` / `quant` | `qwen3-8b` / `Q4_K_M` | 必须是目录中的条目。 |
+| `backend` | `auto` | macOS 上忽略(始终为 Metal)。 |
+| `ctx_size` | `auto` | 低于 16,384 会被拒绝。自动模式在内存允许时以 32K 为目标。 |

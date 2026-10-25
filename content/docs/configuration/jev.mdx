@@ -1,0 +1,101 @@
+---
+title: Jev (optional)
+description: An optional, off-by-default third-party service that decides which tools, skills and context the agent sees — and what it sends.
+---
+
+**Jev** (TypeSafe System One) is an optional **decision service** added in v0.3.16.
+When it is on, the agent asks Jev small questions during a turn — which tools to offer,
+whether to load a skill, how much of a large tool result the model needs to see — and
+uses the answers to keep the model's context smaller and cheaper.
+
+**Jev is off by default, and off means no request is ever sent to it** — the agent
+behaves exactly as it does without Jev. It is a separate service run by **TypeSafe**:
+you bring your own Jev API key and TypeSafe bills you for it, on top of your model
+provider.
+
+> **Turning Jev on sends conversation data to a third party.** Except on sensitive
+> sites (below), page content and tool results go to the Jev endpoint you configure.
+> NevoFlux asks you to confirm this the first time you switch Jev on. Read the
+> [privacy section](#what-jev-sees) before enabling it.
+
+## Turn it on
+
+Open **Settings → Jev** (`nevoflux://settings`, **Jev** in the sidebar).
+
+1. Under **Connection**, check the **Endpoint** (default
+   `https://api.typesafe.ai/v1/systemone`) and paste your **API key**.
+2. Click **Test connection**. It reports the median latency of a few requests and
+   suggests a timeout; **Use … ms** applies it.
+3. Switch on **Use Jev** and confirm the notice.
+
+Every change saves immediately to the `[jev]` section of
+[`config.toml`](/en/docs/configuration).
+
+## Decision points
+
+Each decision point can be switched separately under **Decision points**:
+
+| Switch | Default | What Jev decides |
+| --- | --- | --- |
+| **Choose the tools for each task** | Off | Which tools (beyond the core set) the model is offered for this task. Off by default because a per-task tool list defeats prompt caching and cost more than it saved in testing. |
+| **Load a skill when the request clearly needs one** | On | Whether to load one skill at the start of the turn (only above a confidence threshold). |
+| **Grade large tool results** | On | How much of a large tool result the model sees now; the full result is kept and can be recalled later in the turn. |
+| **Rebuild earlier turns when it pays off** | On | Whether to rebuild the conversation history sent to the model, when the token saving outweighs losing the prompt cache. |
+| **Ask before risky actions** | Off | Whether a tool call that your [execution tier](/en/docs/settings/general#agent-execution-tiers) would allow should still ask you first. It can only *add* a confirmation — it never approves anything the tier would not. |
+
+If Jev is slow or unreachable, the agent falls back to its own built-in rules for that
+decision and carries on; a timeout never fails the turn. Hover a reply's token line
+in the sidebar to see how many Jev requests it made — it also says when most of them
+fell back.
+
+**Where it applies.** Jev's context decisions only apply to providers the agent drives
+itself (cloud APIs and custom providers). With a provider that runs its own agent loop
+— Claude Code, Gemini CLI, Antigravity or OpenClaw — only **Ask before risky actions**
+applies; with an
+[on-device model](/en/docs/configuration/local-models), Jev does not apply at all. The
+settings page says so under the switch.
+
+## What Jev sees
+
+- **Normal pages:** page content and tool results relevant to the decision.
+- **Sensitive sites:** only the domain, the page title and an element count — never
+  page text or tool results. A built-in list covers common banking, payment, mail,
+  medical and government sites (expand **Built-in list** to see it); add your own
+  under **Sensitive sites**, one domain per line (subdomains are included). Private
+  and loopback IP addresses, single-label hosts and intranet suffixes (`.local`,
+  `.internal`, `.lan`, `.corp`, `.home.arpa`, `.intranet`) are always treated as
+  sensitive.
+- **Content with no known page:** MCP tool output and content from a tab that can no
+  longer be identified get the sensitive-site treatment (metadata only).
+- **Content that is not from a page** — your own messages, local file contents, shell
+  output — is not filtered by the sensitive-site list.
+
+Other safeguards: a remote endpoint must use **HTTPS** (plain `http://` is only allowed
+for a loopback address), redirects are not followed, and while an
+[on-device model](/en/docs/configuration/local-models#what-the-localonly-guard-guarantees)
+is active only a loopback endpoint can be reached.
+
+## `[jev]`
+
+```toml
+[jev]
+enabled = false
+endpoint = "https://api.typesafe.ai/v1/systemone"
+api_key = ""             # empty → NEVOFLUX_API_KEY_TYPESAFE env var
+timeout_ms = 800         # 100–10000
+model = "jev-latest"
+sensitive_domains = []   # added to the built-in list
+tools_k = 10             # tools Jev may pick beyond the core set
+skill_threshold = 0.8    # load a skill only at this confidence or above
+
+[jev.points]
+tools = false
+skills = true
+visibility = true
+rebuild = true
+permissions = false
+```
+
+The key can come from `config.toml` or from the `NEVOFLUX_API_KEY_TYPESAFE`
+environment variable; like other keys, it is stored in plain text in `config.toml` if
+you set it there.

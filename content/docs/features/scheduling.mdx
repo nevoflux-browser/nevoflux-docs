@@ -20,6 +20,17 @@ agent in plain language and it creates one for you:
 The agent always confirms the schedule's **name** and a human-readable **cadence**
 with you before creating it.
 
+> **Creating a schedule needs Full auto** (new in v0.3.16). A scheduled run fires
+> with nobody there to confirm its tool calls, so it approves them itself.
+> `schedule_create` is therefore checked against your
+> [Agent execution tier](/en/docs/settings/general#agent-execution-tiers) and
+> refused below **Full auto** — whatever the schedule's `mode`, and whether the
+> call comes from NevoFlux's own agent or from an ACP/CLI provider through
+> NevoFlux's tools. Listing, pausing, resuming, running now and cancelling existing
+> schedules are not affected. This is stricter than
+> [loops](/en/docs/features/automation#loops-recurring-tasks), where `mode: chat`
+> needs no grant: a schedule can run unattended for months.
+
 - **Cadence** — a 5-field cron expression (e.g. `0 9 * * *`) for recurring jobs, or a
   one-off `at` time (RFC3339, or Unix seconds). The two are mutually exclusive.
 - **Minimum cadence is 1 hour.** A cron that fires more often is rejected — use a
@@ -36,6 +47,12 @@ with you before creating it.
 
 Schedules fire from the NevoFlux daemon, so they run whenever NevoFlux is running;
 the poll granularity is well within the 1-hour minimum cadence.
+
+While the [on-device model](/en/docs/configuration/local-models#what-changes-in-local-mode)
+is active, a schedule that comes due is **recorded as missed** and moved to its next
+time instead of running — and it is not caught up later, even with `catch_up` on.
+Goals that need a model to judge them pause; goals with a programmatic `check`
+still run.
 
 ### Managing schedules
 

@@ -3,7 +3,7 @@ title: Develop a Pack
 description: Author a NevoFlux pack — the pack.toml manifest, components, the capability sandbox, lifecycle, and a complete example.
 ---
 
-> Protocol: `pack-protocol/0.1` · Audience: pack authors (first- and third-party)
+> Protocol: `pack-protocol/0.1` and `pack-protocol/0.2` (NevoFlux 0.3.16+) · Audience: pack authors (first- and third-party)
 
 A pack is **a set of files plus a manifest** — you do not write installer code. You
 write declarations and the files they point at; the daemon handles transactional
@@ -76,7 +76,7 @@ directory that contains it.
 name = "my-pack"                  # required. [a-z0-9-]+, unique. Also the receipt key and
                                   #   the default GBrain namespace prefix.
 version = "0.1.0"                 # required. semver.
-protocol = "pack-protocol/0.1"    # required. Must be a protocol version the platform supports.
+protocol = "pack-protocol/0.1"    # required. "pack-protocol/0.1" or "pack-protocol/0.2".
 min_nevoflux = "0.3.0"            # required. semver lower bound; checked against the daemon version.
 description = "One-line summary"  # optional.
 license = "MIT"                   # optional.
@@ -94,8 +94,14 @@ namespace = "my"                  # optional. Overrides the GBrain namespace pre
 | `[components.dashboard]` | "My Canvas" (persistent artifact) | yes |
 | `[components.protected]` | (declaration only) | n/a — marks pages as user data |
 | `[components.knowledge]` | — | **not supported yet** |
+| `[[components.tool_policy]]` *(0.2)* | (declaration only) — site rules | n/a |
+| `[components.hooks]` *(0.2)* | a WebAssembly module in the pack | n/a |
+| `[components.prompt]` *(0.2)* | (declaration only) — prompt-replacement ceiling | n/a |
+| `[permissions]` *(0.2)* | (declaration only) | n/a |
 
-Every component is optional. A pack can ship any subset.
+Every component is optional. A pack can ship any subset. The 0.2 components are
+described in [pack-protocol/0.2 additions](#pack-protocol02-additions); declaring
+any of them under `protocol = "pack-protocol/0.1"` is a parse error.
 
 ## Components in depth
 
@@ -208,7 +214,7 @@ Ships a **prebuilt Canvas micro-app** as a persistent "My Canvas" artifact:
 
 ```toml
 [components.dashboard]
-artifact_id = "my-pack-dashboard"   # must start with the pack name
+artifact_id = "my-pack-dashboard"   # the pack name, or starting with "<pack-name>-"
 content_type = "project"
 files_from = "components/canvas-app/dist"   # a directory of built files (index.html + assets)
 entry = "index.html"                        # the entry file within files_from
@@ -216,17 +222,196 @@ entry = "index.html"                        # the entry file within files_from
 
 The directory's files are packed into the artifact and inserted as persistent, so it
 survives session deletion and appears under **My Canvas**. Re-install upserts the same
-`artifact_id` (no duplicate rows), which **must start with the pack name** so packs
-can't clobber each other's artifacts.
+`artifact_id` (no duplicate rows), which **must be the pack name or start with
+`<pack-name>-`** so packs can't clobber each other's artifacts.
+
+The dashboard runs as a [Canvas](/en/docs/canvas) and is bound by the
+[Canvas bridge rules](/en/docs/canvas/sdk#what-a-canvas-may-do) like any other —
+its own storage, its own sessions, page-changing actions only in tabs it opened.
+What it may additionally reach depends on the protocol:
+
+- **`pack-protocol/0.1`** — the same as a canvas the agent generated: `callTool` is
+  checked against site rules only, and `agent.sendCommand` may send only
+  `daemon.info`, `skill.list` and `artifact.get` (its own artifact).
+- **`pack-protocol/0.2`** — exactly what it declares, and **nothing it does not**:
+
+```toml
+[components.dashboard.capabilities]
+call_tool = ["navigate", "get_markdown", "screenshot"]  # NevofluxSDK.callTool actions
+commands  = ["skill.list", "schedule.list"]             # NevofluxSDK.agent.sendCommand
+invoke    = ["pdf.render"]                              # NevofluxSDK.tool.invoke (see note)
+```
+
+`call_tool` lists browser actions by their bare name (`click`, not
+`browser_click`); a call to an undeclared one is refused with
+`CAPABILITY_NOT_DECLARED`. `commands` lists daemon commands by exact name; an
+undeclared one is refused with `COMMAND_NOT_DECLARED`. Some commands can never be
+granted to any canvas — anything under `config.`, `remote.`, `account.`,
+`content_store.`, `soul.`, `local.` or `kb.wizard.`, plus `mcp.add` / `update` /
+`delete` / `connect` / `disconnect`, `pack.install` / `update` / `uninstall`,
+`jev.set`, `models.download`, `session.delete`, `session.clone`, `file.pick`,
+`status`, `tabs.list`, `usage.export_calls`, `brain.share_create`,
+`brain.share_import_url` and `skill.reload`. Declaring one of these fails
+validation (`DashboardCommandRejected`), so the install preview never lists a
+command the panel would not get. The preview does list the declared commands.
+
+> **`invoke` is not enforced yet.** It is parsed and kept, but in 0.3.16 a
+> dashboard's `tool.invoke` calls are limited by the
+> [tool whitelist](/en/docs/canvas/tool-whitelist) only. Declare what you use anyway,
+> so the pack keeps working when it is enforced.
 
 ### Not yet supported
 
 - **`[components.knowledge]`** — shipping a whole prebuilt knowledge base as a removable,
-  read-only source is **not available in `pack-protocol/0.1`**. A manifest containing it
+  read-only source is **not available** in `pack-protocol/0.1` or `0.2`. A manifest containing it
   is rejected with `KNOWLEDGE_UNSUPPORTED`. Ship starter content as `[[components.seed]]`
   pages instead.
 - **`[components.config]`** — packs may **not** write to `config.toml`. A manifest
   containing it is rejected. Express behavior through skills/conventions instead.
+
+## pack-protocol/0.2 additions
+
+`pack-protocol/0.2` (NevoFlux 0.3.16+) lets a pack shape how the agent *behaves*, not
+just what is installed. Set both fields:
+
+```toml
+[pack]
+protocol = "pack-protocol/0.2"
+min_nevoflux = "0.3.16"
+```
+
+Every 0.2 field defaults to asking for nothing, so a 0.1 manifest with only its
+`protocol` bumped behaves exactly as before.
+
+### Installed vs. active scope
+
+Rules and hooks carry a `scope`:
+
+- **`active`** (the default) — applies only while the pack is **active** in the
+  current run.
+- **`installed`** — applies to every session, whether or not the pack is active. Use it
+  for guards that should always hold; users can only turn them off by uninstalling.
+
+The agent activates packs itself with the `pack_activate` tool (and `pack_deactivate`,
+`pack_list_active`) when the user's goal matches what a pack is for — there is no
+activation switch in the UI, so make your skills' descriptions say clearly what the pack
+is for. Several packs can be active at once, with no precedence between them.
+Activation:
+
+- lasts for the run that made it — subagents it spawns share it — and never carries
+  over to another conversation;
+- is refused for a pack that is not installed, or that is a 0.1 pack;
+- can be undone by the agent silently **unless** the pack is currently enforcing
+  `active` site rules. Then the user is asked, because the agent would be lifting a
+  restriction on itself — and in an unattended loop or schedule, nobody can be asked,
+  so the deactivation is refused.
+
+Skills from an installed pack are available whether or not the pack is active.
+
+### Site rules — `[[components.tool_policy]]`
+
+A site rule refuses a tool, or makes the agent ask the user first, on matching URLs.
+There is a `deny` list and an `ask` list and **no allow list**: a pack can tighten
+what the user's [execution tier](/en/docs/settings/general#agent-execution-tiers)
+allows, never loosen it.
+
+```toml
+[[components.tool_policy]]
+scope   = "active"                          # "active" (default) or "installed"
+match   = { url = ["*://*.mybank.example/*"] }
+ask     = ["browser_click*", "browser_fill*", "browser_type*", "browser_input"]
+deny    = ["browser_eval_js"]
+message = "Banking pages: confirm every action."   # shown to the user and the model
+```
+
+- **`deny` / `ask`** are tool names, with `*` as a wildcard (`browser_click*` covers
+  `browser_click` and `browser_click_by_id`). A rule must deny or ask at least one
+  thing. Use the agent's real tool names, as listed on
+  [Browser automation](/en/docs/features/browser-automation).
+- **`match.url`** is a list of `*`-globs matched against the URL the call is aimed at:
+  the `url` argument when the call carries one (so `browser_navigate` is judged by where
+  it is going), otherwise the URL of the tab it acts on (the tab it names, else the
+  active tab). Since 0.3.16 a click, fill or type is judged on its tab's URL too. An
+  empty `url` list applies on every site; a URL-scoped rule never fires on a call with
+  no URL at all, such as a file tool.
+- URLs are **canonicalised** before matching: lowercase scheme and host, default port
+  dropped, an empty path becomes `/`, a trailing dot on the host, userinfo and
+  `#fragment` removed, and any `view-source:` prefix peeled off. Patterns are
+  normalised the same way, and a pattern naming only a host
+  (`https://mybank.example`) means the whole site. A pattern containing a username or a
+  `#` can never match.
+- **Deny beats ask, across all packs**: every applicable rule is checked, so one pack's
+  `deny` wins over another's `ask` regardless of load order.
+- **`ask`** shows the user a permission dialog — with no "always allow", since a rule
+  asks about *this* action *here*. It asks even at **Full auto**. A timeout, an
+  unattended run (loop, schedule), or a Canvas panel's `callTool` — none of which can
+  host a dialog — settles it as a refusal.
+- A refusal reaches the model as `POLICY_DENIED` with your `message`, marked as a policy
+  decision so it does not retry.
+- Rules also apply to a Canvas panel's `callTool` (`click` is matched as
+  `browser_click`), and to ACP/CLI providers calling NevoFlux's tools — but not to such
+  a provider's *own* built-in tools.
+- Rules judge the URL **before** a call runs. A click that redirects into a matching
+  site is caught from the next call onward, not that one.
+
+### Prompt replacement — `[components.prompt]`
+
+```toml
+[components.prompt]
+replace = "keep_kernel"   # "none" (default), "keep_kernel", or "full"
+```
+
+Declares the most the pack may do to the agent's system prompt. While the pack is
+active the agent can call `system_prompt_replace` (with `content`, `mode` and a
+`reason`) on its behalf; the change takes effect from the next step and is logged.
+The guards:
+
+- **The ceiling binds.** A pack that declared `keep_kernel` cannot use `full`
+  (`MODE_NOT_DECLARED`).
+- **Exclusive.** While one pack holds the prompt, another gets `PROMPT_HELD_BY`, and
+  only the holder can call `system_prompt_restore`.
+- **Attribution must be unambiguous.** If more than one active pack declares a replace
+  mode, the call is refused (`PACK_AMBIGUOUS`) rather than credited to a guess.
+- **It ends** when the holder restores it, when the pack is deactivated, or when the run
+  ends — it never outlives the task.
+- `keep_kernel` currently keeps only the loaded-skill section, so in practice it replaces
+  nearly as much as `full`.
+
+Permission checks, site rules and the execution tier are enforced in code, not by
+the prompt, so even `full` cannot talk the agent past them.
+
+### Hooks — `[components.hooks]` (not usable yet)
+
+The manifest accepts a WebAssembly hook module:
+
+```toml
+[components.hooks]
+file   = "components/hooks/guard.wasm"
+scope  = "active"                    # "active" (default) or "installed"
+points = ["on_tool_pre"]
+budget = { ms = 50, fuel = 1000000 }  # per call; these are the defaults
+```
+
+NevoFlux 0.3.16 has the runtime for `on_tool_pre` — a check that runs after site rules
+on every tool call and can allow, abstain, ask or deny — but **the installer does not
+copy the module into the installed pack**, so a hook does not run for a pack installed
+the normal way. The other points validation accepts (`on_tool_post`,
+`on_context_assemble`, `on_knowledge_write`, `on_loop_iteration_start`,
+`on_loop_iteration_end`) are never called. Don't rely on hooks for anything yet; use
+site rules.
+
+### `[permissions]`
+
+```toml
+[permissions]
+tools        = ["browser.read", "fs.session"]   # capability groups
+unattended   = false                            # may it run with nobody watching
+side_effects = ["submits job applications"]     # consequences outside the session
+```
+
+A declaration of what the pack asks for, intended for a graded install checklist. In
+0.3.16 it is validated but **not shown at install and not enforced** — individual
+actions are still governed by the user's execution tier and any site rules.
 
 ## The capability sandbox (validation rules)
 
@@ -243,10 +428,17 @@ installing. Your pack must satisfy:
    pack namespace.
 5. **`seed` ⊆ `protected`** — every seed slug must be covered by a protected slug/prefix
    (hard reject otherwise — the "never auto-delete user data" guarantee).
-6. **Dashboard id namespacing** — `dashboard.artifact_id` must start with the pack name.
+6. **Dashboard id namespacing** — `dashboard.artifact_id` must be the pack name or start
+   with `<pack-name>-`.
+7. **Grantable dashboard commands** *(0.2)* — every entry in
+   `dashboard.capabilities.commands` must be non-empty, contain no whitespace, and not be
+   on the permanent deny list.
 
 Parse-time checks also apply: `name` matches `[a-z0-9-]+`; `version`/`min_nevoflux` are
-valid semver; `protocol` is supported.
+valid semver; `protocol` is supported; no 0.2-only component appears under 0.1; every
+`tool_policy` rule has a known `scope` and denies or asks *something*; `hooks` has a
+known `scope`, at least one known point, and a non-zero budget; `prompt.replace` is
+`none`, `keep_kernel` or `full`.
 
 ## Lifecycle & guarantees
 
@@ -258,6 +450,12 @@ artifact → activate → commit receipt`.
   seed is only-if-absent; the dashboard upserts by id.
 - **Receipt**: written to `~/.config/nevoflux/packs/<name>/receipt.json` — records every
   placed file (absolute path + sha256), the dashboard artifact id, and the seeded slugs.
+- **Installed manifest** (0.3.16+): a copy of your `pack.toml` is kept next to the receipt
+  at `~/.config/nevoflux/packs/<name>/pack.toml`. Site rules, activation, the prompt
+  ceiling and the dashboard's declared capabilities are all read from this copy, not from
+  your source tree — run `nevoflux pack update` after changing them. A 0.2 dashboard
+  whose installed manifest is missing or unreadable is refused every daemon command
+  (`PACK_MANIFEST_UNAVAILABLE`) rather than falling back to a default set.
 
 **Uninstall** is driven entirely by the receipt:
 
@@ -367,3 +565,17 @@ user's `career/…` pages** unless `--purge-data` is passed.
   longer matches the receipt. Use `--force` to remove anyway.
 - **"The dashboard didn't update after `update`."** It upserts by `artifact_id`; keep the
   id stable across versions.
+- **"`requires protocol 'pack-protocol/0.2'`."** You used a 0.2 component (`tool_policy`,
+  `hooks`, `prompt`, `dashboard.capabilities`, `[permissions]`) under
+  `protocol = "pack-protocol/0.1"`. Bump the protocol and `min_nevoflux = "0.3.16"`.
+- **"My site rule never fires."** Check the URL pattern: it is matched against the
+  canonical URL, which always has a path (`https://example.org/`), so use
+  `*://example.org/*` rather than `*://example.org`; a pattern with a username or a
+  `#fragment` never matches. And an `active` rule only applies after the agent has
+  activated the pack.
+- **"`pack_activate` says my pack is not installed."** Only `pack-protocol/0.2` packs can
+  be activated, and only once installed by NevoFlux 0.3.16 or later (which keeps the
+  manifest). Update or reinstall it.
+- **"My dashboard's `sendCommand` is refused."** A 0.2 dashboard gets only the commands in
+  `dashboard.capabilities.commands`; a 0.1 dashboard gets only `daemon.info`,
+  `skill.list` and its own `artifact.get`.

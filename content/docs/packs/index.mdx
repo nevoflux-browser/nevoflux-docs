@@ -9,7 +9,9 @@ pages, and a [Canvas](/en/docs/canvas) dashboard — installed from a single `pa
 manifest. One install drops everything into place; one uninstall takes it cleanly back
 out.
 
-Packs target the `pack-protocol/0.1` protocol.
+NevoFlux 0.3.16 accepts `pack-protocol/0.1` and `pack-protocol/0.2` manifests.
+Version 0.2 adds components that change how the agent *behaves* rather than what is
+installed, so they are worth understanding before you install one.
 
 ## What a pack can bundle
 
@@ -21,6 +23,34 @@ Packs target the `pack-protocol/0.1` protocol.
 | **Dashboard** | a persistent Canvas micro-app | My Canvas |
 
 Every component is optional — a pack can ship any subset.
+
+### What a 0.2 pack can also do
+
+| Component | What it does | When it applies |
+|---|---|---|
+| **Site rules** | refuse a tool, or ask you first, on matching sites — e.g. ask before any click on your bank | while the pack is active, or always if it says `installed` |
+| **Hook** | a WebAssembly check that can refuse or question a tool call before it runs | while the pack is active, or always if `installed` |
+| **Prompt replacement** | lets the agent replace its own system prompt on the pack's behalf | only while the pack is active |
+| **Dashboard capabilities** | the browser actions and daemon commands the pack's dashboard may use; it gets nothing it did not declare | whenever the dashboard runs |
+
+Site rules and hooks can only make the agent **stricter** — a pack has no way to
+allow anything your [Agent execution tier](/en/docs/settings/general#agent-execution-tiers)
+would not. Prompt replacement is the powerful one: a pack declaring `full` can
+replace the agent's entire instructions while it is active. The permission checks
+themselves live in code, not in the prompt, so they are unaffected.
+
+### Active packs
+
+Installing a pack makes its skills available everywhere. Its active-scope parts —
+site rules, hooks and prompt replacement scoped to `active` — apply only once the
+agent **activates** the pack (`pack_activate`), which it does when your goal
+matches what the pack is for. Several packs can be active at once. Only 0.2 packs
+can be activated.
+
+Activation lives in the run that made it and the subagents it spawns; it never
+carries over into another conversation. When the agent wants to deactivate a pack
+whose rules are currently restricting it, it has to **ask you** — the agent cannot
+lift a guard on itself — and in an unattended loop or schedule it simply cannot.
 
 ## What the platform guarantees
 
@@ -47,6 +77,12 @@ ones from either a local `pack.toml` path or a **GitHub source**. Remote sources
 **inspect → preview → confirm** flow before anything is written. Per-row **Update** and
 **Uninstall** are available, with an optional "also delete this pack's data" choice that
 is **off by default**.
+
+The preview lists the pack's skills, canvas tools and the binaries they run, seed
+pages, the dashboard, and the daemon commands the dashboard declares. It **does
+not yet show** a 0.2 pack's site rules, hook, or prompt-replacement mode — read the
+`[[components.tool_policy]]`, `[components.hooks]` and `[components.prompt]` sections
+of its `pack.toml` before installing a pack you don't already trust.
 
 ### Install link (packhub)
 
